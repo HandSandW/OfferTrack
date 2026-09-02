@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="OfferTrack provisional icon">
+  <rect width="512" height="512" rx="112" fill="#15233b"/>
+  <path d="M142 125h228c19 0 35 16 35 35v192c0 19-16 35-35 35H142c-19 0-35-16-35-35V160c0-19 16-35 35-35Z" fill="#f5f7fb"/>
+  <path d="M183 191h146M183 256h105M183 321h68" fill="none" stroke="#2867d5" stroke-width="30" stroke-linecap="round"/>
+  <circle cx="349" cy="321" r="46" fill="#4fd190"/>
+  <path d="m328 321 14 15 29-32" fill="none" stroke="#15233b" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

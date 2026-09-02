@@ -1,0 +1,27 @@
+node_modules/
+dist/
+target/
+src-tauri/target/
+.vite/
+coverage/
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+OfferTrack-data/
+
+# Keep evolving project documentation local until the public documentation is stable.
+/*.md
+docs/
+.github/ISSUE_TEMPLATE/
+.github/pull_request_template.md
+
+# Generated Tauri metadata and currently unsupported platform assets.
+src-tauri/gen/
+src-tauri/icons/*
+!src-tauri/icons/app-icon.svg
+!src-tauri/icons/icon.ico
