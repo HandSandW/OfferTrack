@@ -83,6 +83,21 @@ impl WarehouseSession {
     pub fn root(&self) -> &Path {
         &self.root
     }
+
+    pub fn connection(&self) -> &Connection {
+        &self._connection
+    }
+
+    pub fn connection_mut(&mut self) -> Result<&mut Connection, CoreError> {
+        if self.access_mode == WarehouseAccessMode::ReadOnly {
+            return Err(CoreError::ReadOnlyWarehouse);
+        }
+        Ok(&mut self._connection)
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.access_mode == WarehouseAccessMode::Write
+    }
 }
 
 pub fn create(path: &Path) -> Result<WarehouseSession, CoreError> {
@@ -133,7 +148,7 @@ pub fn open(path: &Path, access_mode: WarehouseAccessMode) -> Result<WarehouseSe
         return Err(CoreError::Storage);
     }
 
-    let descriptor = read_descriptor(&root)?;
+    let mut descriptor = read_descriptor(&root)?;
     validate_descriptor(&descriptor)?;
     let lock = match access_mode {
         WarehouseAccessMode::Write => Some(acquire_write_lock(&root)?),
@@ -160,17 +175,20 @@ pub fn open(path: &Path, access_mode: WarehouseAccessMode) -> Result<WarehouseSe
     };
 
     match access_mode {
-        WarehouseAccessMode::Write => migrations::migrate(&mut connection)?,
+        WarehouseAccessMode::Write => {
+            migrations::migrate(&mut connection)?;
+            if descriptor.capabilities.database_schema_version != CURRENT_SCHEMA_VERSION {
+                descriptor.capabilities.database_schema_version = CURRENT_SCHEMA_VERSION;
+                write_descriptor(&root, &descriptor)?;
+            }
+        }
         WarehouseAccessMode::ReadOnly => migrations::validate_schema(&connection)?,
     }
 
-    Ok(build_session(
-        root,
-        descriptor,
-        access_mode,
-        lock,
-        connection,
-    ))
+    let mut session = build_session(root, descriptor, access_mode, lock, connection);
+    crate::recycle_bin::recover_moves(&mut session)?;
+    crate::copying::recover(&mut session)?;
+    Ok(session)
 }
 
 fn build_session(
@@ -208,7 +226,7 @@ fn configure_writable_database(connection: &Connection) -> Result<(), CoreError>
     connection
         .execute_batch(
             "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;",
+             PRAGMA synchronous = FULL;",
         )
         .map_err(|_| CoreError::DatabaseInvalid)
 }

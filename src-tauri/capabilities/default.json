@@ -3,5 +3,9 @@
   "identifier": "main-capability",
   "description": "OfferTrack 主窗口的最小权限集合",
   "windows": ["main"],
-  "permissions": ["core:default", "dialog:allow-open"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-destroy",
+    "dialog:allow-open"
+  ]
 }

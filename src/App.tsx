@@ -3,11 +3,20 @@ import { listen } from "@tauri-apps/api/event";
 import type { WarehouseSummary } from "./contracts";
 import { selectDirectory } from "./lib/dialog";
 import { desktopApi, OfferTrackError } from "./lib/tauri";
+import { ApplicationPage } from "./features/applications/ApplicationPage";
+import { WorkflowTemplatesPage } from "./features/workflows/WorkflowTemplatesPage";
+import { DraftGuardProvider } from "./shared/DraftGuardProvider";
+import { useDraftGuard, useDraftState } from "./shared/draftGuard";
+import {
+  RecycleBinPage,
+  SettingsPage,
+} from "./features/management/PhaseTwoPages";
 
 const pages = [
   { id: "overview", label: "概览", phase: 1 },
   { id: "applications", label: "投递记录", phase: 2 },
   { id: "tasks", label: "待办与提醒", phase: 3 },
+  { id: "templates", label: "流程模板", phase: 2 },
   { id: "archive", label: "已归档", phase: 2 },
   { id: "recycle", label: "回收站", phase: 2 },
   { id: "settings", label: "设置", phase: 1 },
@@ -54,11 +63,21 @@ function WarehouseCard({ warehouse }: { warehouse: WarehouseSummary }) {
 }
 
 export function App() {
+  return (
+    <DraftGuardProvider>
+      <AppContent />
+    </DraftGuardProvider>
+  );
+}
+
+function AppContent() {
+  const { confirmLeave } = useDraftGuard();
   const [page, setPage] = useState<PageId>("overview");
   const [warehouse, setWarehouse] = useState<WarehouseSummary | null>(null);
   const [rememberedPath, setRememberedPath] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(true);
+  useDraftState(false, busy, "数据仓库操作");
 
   const reportError = useCallback((error: unknown, lockedPath?: string) => {
     const known =
@@ -72,7 +91,16 @@ export function App() {
     setNotice({
       kind: "error",
       text: known.message,
-      ...(known.code === "WAREHOUSE_LOCKED" && lockedPath
+      ...([
+        "WAREHOUSE_LOCKED",
+        "COPY_RECOVERY_REQUIRED",
+        "FILE_OPERATION_FAILED",
+        "FILE_MISSING",
+        "FILE_BUSY",
+        "FILE_ACCESS_DENIED",
+        "FILE_TYPE_MISMATCH",
+        "UNSAFE_PATH_REJECTED",
+      ].includes(known.code) && lockedPath
         ? { lockedPath }
         : {}),
     });
@@ -101,6 +129,7 @@ export function App() {
 
   const chooseAndOpen = useCallback(
     async (create: boolean) => {
+      if (!(await confirmLeave())) return;
       setNotice(null);
       const path = await selectDirectory(
         create
@@ -122,11 +151,12 @@ export function App() {
         setBusy(false);
       }
     },
-    [reportError],
+    [reportError, confirmLeave],
   );
 
   const openRemembered = async () => {
     if (!rememberedPath) return;
+    if (!(await confirmLeave())) return;
     setBusy(true);
     setNotice(null);
     try {
@@ -139,6 +169,7 @@ export function App() {
   };
 
   const openReadOnly = async (path: string) => {
+    if (!(await confirmLeave())) return;
     setBusy(true);
     setNotice(null);
     try {
@@ -151,6 +182,7 @@ export function App() {
   };
 
   const closeWarehouse = useCallback(async () => {
+    if (!(await confirmLeave())) return;
     setBusy(true);
     try {
       await desktopApi.closeWarehouse();
@@ -161,7 +193,15 @@ export function App() {
     } finally {
       setBusy(false);
     }
-  }, [reportError]);
+  }, [reportError, confirmLeave]);
+
+  const navigate = useCallback(
+    async (target: PageId) => {
+      if (target === page || !(await confirmLeave())) return;
+      setPage(target);
+    },
+    [page, confirmLeave],
+  );
 
   useEffect(() => {
     const unlisten = listen<string>("menu-action", (event) => {
@@ -178,7 +218,7 @@ export function App() {
         case "overview":
         case "settings":
         case "help":
-          setPage(event.payload);
+          void navigate(event.payload);
           break;
         case "about":
           setNotice({
@@ -192,7 +232,7 @@ export function App() {
     return () => {
       void unlisten.then((dispose) => dispose());
     };
-  }, [chooseAndOpen, closeWarehouse]);
+  }, [chooseAndOpen, closeWarehouse, navigate]);
 
   const selectedPage = pages.find((item) => item.id === page) ?? pages[0];
 
@@ -212,8 +252,9 @@ export function App() {
           {pages.map((item) => (
             <button
               className={page === item.id ? "nav-item active" : "nav-item"}
+              disabled={busy}
               key={item.id}
-              onClick={() => setPage(item.id)}
+              onClick={() => void navigate(item.id)}
               type="button"
             >
               <span>{item.label}</span>
@@ -252,12 +293,19 @@ export function App() {
           </div>
         </header>
 
-        <div className="content">
+        <div
+          className={
+            page === "applications" || page === "archive"
+              ? "content content-wide"
+              : "content"
+          }
+        >
           {notice && (
             <div className={`notice ${notice.kind}`} role="alert">
               <span>{notice.text}</span>
               {notice.lockedPath && (
                 <button
+                  disabled={busy}
                   onClick={() => void openReadOnly(notice.lockedPath!)}
                   type="button"
                 >
@@ -267,7 +315,33 @@ export function App() {
             </div>
           )}
 
-          {page === "overview" ? (
+          {!warehouse && page !== "help" ? (
+            <section className="empty-state">
+              <div className="empty-icon" aria-hidden="true">
+                OT
+              </div>
+              <p className="eyebrow">尚未连接数据仓库</p>
+              <h2>先打开或新建本地数据仓库</h2>
+              <p>连接后即可管理投递、简历文件、归档和回收站。</p>
+              <div className="empty-actions">
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void chooseAndOpen(true)}
+                  type="button"
+                >
+                  新建数据仓库
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => void chooseAndOpen(false)}
+                  type="button"
+                >
+                  打开已有仓库
+                </button>
+              </div>
+            </section>
+          ) : page === "overview" ? (
             <>
               {warehouse ? (
                 <WarehouseCard warehouse={warehouse} />
@@ -311,27 +385,63 @@ export function App() {
                 </section>
               )}
 
-              <section className="stage-grid" aria-label="阶段一能力">
+              <section className="stage-grid" aria-label="当前能力">
                 <article>
                   <span>01</span>
-                  <h3>本地优先</h3>
-                  <p>数据库与附件目录位于用户选择的数据仓库中。</p>
+                  <h3>投递记录</h3>
+                  <p>
+                    阶段 2 已支持记录、流程、面试轮次、筛选分组和持久化视图。
+                  </p>
                 </article>
                 <article>
                   <span>02</span>
-                  <h3>单写者保护</h3>
-                  <p>同一仓库只允许一个写入实例，其他实例可只读查看。</p>
+                  <h3>独立文件夹</h3>
+                  <p>
+                    每条投递拥有独立目录，可直接通过文件管理器维护简历材料。
+                  </p>
                 </article>
                 <article>
                   <span>03</span>
-                  <h3>版本化迁移</h3>
-                  <p>仓库格式和数据库结构都带版本，为后续升级留出边界。</p>
+                  <h3>安全回收站</h3>
+                  <p>删除先移入仓库回收站，确认清空时才永久删除。</p>
                 </article>
               </section>
             </>
+          ) : page === "applications" ? (
+            <ApplicationPage
+              key={`${warehouse!.warehouseId}:active`}
+              onError={reportError}
+              scope="active"
+              writable={!busy && warehouse!.accessMode === "write"}
+            />
+          ) : page === "archive" ? (
+            <ApplicationPage
+              key={`${warehouse!.warehouseId}:archived`}
+              onError={reportError}
+              scope="archived"
+              writable={!busy && warehouse!.accessMode === "write"}
+            />
+          ) : page === "templates" ? (
+            <WorkflowTemplatesPage
+              key={warehouse!.warehouseId}
+              onError={reportError}
+              writable={!busy && warehouse!.accessMode === "write"}
+            />
+          ) : page === "recycle" ? (
+            <RecycleBinPage
+              key={warehouse!.warehouseId}
+              onError={reportError}
+              writable={!busy && warehouse!.accessMode === "write"}
+            />
+          ) : page === "settings" ? (
+            <SettingsPage
+              key={warehouse!.warehouseId}
+              onError={reportError}
+              writable={!busy && warehouse!.accessMode === "write"}
+            />
           ) : page === "help" ? (
             <section className="placeholder help-content">
-              <p className="eyebrow">阶段 1 使用说明</p>
+              <p className="eyebrow">阶段 2 使用说明</p>
               <h2>帮助</h2>
               <ol>
                 <li>
@@ -343,12 +453,48 @@ export function App() {
                 </li>
                 <li>同一仓库只能有一个写入实例；发生占用时可选择只读打开。</li>
                 <li>
+                  在“投递记录”中新建记录。首次切换到“已投递”时，系统自动填写当天投递日期。
+                </li>
+                <li>
+                  单击一行打开右侧详情；资料、招聘阶段、面试轮次、文件和变更历史分别管理。
+                </li>
+                <li>
+                  资料修改后点击“保存修改”。新建表单、资料或流程表单未保存时，离开页面或关闭窗口会提示；保存进行中请等待完成。
+                </li>
+                <li>
+                  “流程”中可编辑当前投递的阶段名称与颜色；面试轮次可记录本地计划/完成时间、状态、结果和备注。保存为模板不会改变已有投递。
+                </li>
+                <li>
+                  “调整阶段顺序”仅改变当前投递的展示顺序；“流程模板”页可编辑、复制模板并设为默认，只影响以后新建的投递。进度条表示流程位置，不代表成功概率。
+                </li>
+                <li>
+                  “管理辅助状态”可改名、添加或排序当前投递及面试轮次的状态。模板辅助状态单独管理，历史保留当时名称；被使用的自定义状态不能移除。
+                </li>
+                <li>
+                  可以直接在投递文件夹中增删文件，应用会监听变化，也可点击“重新扫描”。
+                </li>
+                <li>
+                  文件按子目录折叠显示；双击文件名用默认应用打开。右键或“更多”可选择其他应用、打开所在文件夹或复制路径，PDF
+                  还可选择已检测到的浏览器。网址
+                  Ctrl+点击使用默认浏览器，右键可更换浏览器或复制链接。
+                </li>
+                <li>
+                  “复制公司信息”建立新岗位；“复制完整记录”会复制数据和文件，但副本始终使用独立目录。
+                </li>
+                <li>
+                  归档不会删除内容；删除会移入 OfferTrack
+                  回收站，清空回收站需再次确认。
+                </li>
+                <li>
+                  恢复遇到重名会使用新目录并显示实际位置，不覆盖原位置。清空不可撤销；失败项剩余内容保留，可释放占用后重试。
+                </li>
+                <li>
                   看到网络盘、云同步或移动磁盘提示时，请避免多设备同时写入并及时备份。
                 </li>
               </ol>
               <p>
-                投递记录、回收站、备份与 Agent
-                接口将在对应开发阶段补充到本帮助中。
+                概览统计、待办提醒、备份恢复、导出与 Agent
+                接口属于后续阶段，本阶段未提前实现。
               </p>
             </section>
           ) : (
