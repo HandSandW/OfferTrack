@@ -93,7 +93,10 @@ pub fn get(session: &WarehouseSession, id: &str) -> Result<ApplicationDetail, Co
     })
 }
 
-fn load_record(connection: &Connection, id: &str) -> Result<ApplicationListItem, CoreError> {
+pub(crate) fn load_record(
+    connection: &Connection,
+    id: &str,
+) -> Result<ApplicationListItem, CoreError> {
     let mut record = connection
         .query_row(
             "SELECT a.id, a.short_id, a.created_at_utc, a.application_date,
@@ -537,12 +540,25 @@ pub fn update(
     session: &mut WarehouseSession,
     request: UpdateApplicationRequest,
 ) -> Result<ApplicationDetail, CoreError> {
-    validate_update_request(&request)?;
-    let now = now_utc();
     let connection = session.connection_mut()?;
     let transaction = connection
         .transaction()
         .map_err(|_| CoreError::DatabaseInvalid)?;
+    update_in_transaction(&transaction, &request)?;
+    transaction
+        .commit()
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    try_normalize_folder(session, &request.id)?;
+    get(session, &request.id)
+}
+
+/// Metadata only; the caller owns commit/backup/audit and any later folder normalization.
+pub(crate) fn update_in_transaction(
+    transaction: &Transaction<'_>,
+    request: &UpdateApplicationRequest,
+) -> Result<(), CoreError> {
+    validate_update_request(request)?;
+    let now = now_utc();
     let changed = transaction
         .execute(
             "UPDATE applications SET
@@ -573,19 +589,15 @@ pub fn update(
         )
         .map_err(|_| CoreError::DatabaseInvalid)?;
     if changed == 0 {
-        return Err(if application_exists(&transaction, &request.id)? {
+        return Err(if application_exists(transaction, &request.id)? {
             CoreError::RevisionConflict
         } else {
             CoreError::NotFound
         });
     }
-    replace_tags(&transaction, &request.id, &request.tags, &now)?;
-    replace_custom_fields(&transaction, &request.id, &request.custom_fields, &now)?;
-    transaction
-        .commit()
-        .map_err(|_| CoreError::DatabaseInvalid)?;
-    try_normalize_folder(session, &request.id)?;
-    get(session, &request.id)
+    replace_tags(transaction, &request.id, &request.tags, &now)?;
+    replace_custom_fields(transaction, &request.id, &request.custom_fields, &now)?;
+    Ok(())
 }
 
 fn validate_update_request(request: &UpdateApplicationRequest) -> Result<(), CoreError> {
@@ -1096,6 +1108,28 @@ pub fn change_stage(
         .connection_mut()?
         .transaction()
         .map_err(|_| CoreError::DatabaseInvalid)?;
+    change_stage_in_transaction(&transaction, &request, &now)?;
+    transaction
+        .commit()
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    get(session, &request.application_id)
+}
+
+/// Shared by single-record editing and atomic batch operations.
+pub(crate) fn change_stage_in_transaction(
+    transaction: &Transaction<'_>,
+    request: &ChangeStageRequest,
+    now: &str,
+) -> Result<(), CoreError> {
+    change_stage_with_actor(transaction, request, now, "user")
+}
+
+pub(crate) fn change_stage_with_actor(
+    transaction: &Transaction<'_>,
+    request: &ChangeStageRequest,
+    now: &str,
+    actor: &str,
+) -> Result<(), CoreError> {
     let (previous_state, application_date, current_revision, previous_stage_id) = transaction
         .query_row(
             "SELECT current_stage_state, application_date, revision, current_stage_id
@@ -1116,7 +1150,7 @@ pub fn change_stage(
     if current_revision != request.revision {
         return Err(CoreError::RevisionConflict);
     }
-    auxiliary_states::require_state(&transaction, &request.application_id, &request.stage_state)?;
+    auxiliary_states::require_state(transaction, &request.application_id, &request.stage_state)?;
     let (stage_name, stable_key) = transaction
         .query_row(
             "SELECT display_name, stable_key FROM workflow_stages
@@ -1170,7 +1204,7 @@ pub fn change_stage(
             "INSERT INTO workflow_events (
                 id, application_id, stage_id, stage_name_snapshot, previous_state,
                 next_state, notes, occurred_at_utc, actor_type
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'user')",
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 Uuid::new_v4().to_string(),
                 request.application_id,
@@ -1180,13 +1214,11 @@ pub fn change_stage(
                 next_state,
                 request.notes,
                 now,
+                actor,
             ],
         )
         .map_err(|_| CoreError::DatabaseInvalid)?;
-    transaction
-        .commit()
-        .map_err(|_| CoreError::DatabaseInvalid)?;
-    get(session, &request.application_id)
+    Ok(())
 }
 
 pub fn save_workflow_stage(
@@ -1559,6 +1591,16 @@ pub fn delete_interview_round(
         .transaction()
         .map_err(|_| CoreError::DatabaseInvalid)?;
     require_record_revision(&transaction, application_id, revision)?;
+    let linked: bool = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM recruitment_events WHERE interview_round_id=?1)",
+            [round_id],
+            |r| r.get(0),
+        )
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    if linked {
+        return Err(CoreError::EventRoundInUse);
+    }
     let changed = transaction
         .execute(
             "DELETE FROM interview_rounds WHERE id = ?1 AND application_id = ?2",

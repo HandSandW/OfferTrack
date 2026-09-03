@@ -1,0 +1,150 @@
+.help-shell {
+  display: grid;
+  grid-template-columns: 285px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+.help-header {
+  grid-column: 1 / -1;
+  padding: 16px 24px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.help-header h1 {
+  margin: 0;
+  font-size: 23px;
+}
+.help-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.help-toc {
+  padding: 18px 12px;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  background: var(--surface-subtle);
+}
+.help-toc label {
+  display: grid;
+  gap: 8px;
+  padding: 0 6px;
+}
+.help-toc input {
+  width: 100%;
+}
+.help-toc nav {
+  display: grid;
+  gap: 6px;
+}
+.help-toc nav button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  border-color: transparent;
+  background: transparent;
+  overflow-wrap: anywhere;
+}
+.help-toc nav button[aria-current="page"] {
+  color: var(--accent);
+  background: var(--selected);
+  border-color: var(--border);
+}
+.help-toc small,
+.help-excerpt {
+  color: var(--muted);
+  font-size: 12px;
+}
+.help-article {
+  min-width: 0;
+  overflow: auto;
+  padding: 28px clamp(20px, 4vw, 60px) 60px;
+  background: var(--surface);
+  line-height: 1.85;
+  overflow-wrap: anywhere;
+}
+.help-article h2 {
+  margin-top: 0;
+}
+.help-article h2:focus {
+  outline: none;
+}
+.help-article h3 {
+  margin-top: 30px;
+}
+.help-article p,
+.help-article li {
+  white-space: pre-wrap;
+}
+.help-article li {
+  margin-bottom: 9px;
+}
+.help-article pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 16px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+}
+.help-article code {
+  font-size: 0.9em;
+}
+.help-article blockquote {
+  margin: 0;
+  padding: 10px 16px;
+  border-left: 3px solid var(--accent);
+  background: var(--selected);
+}
+.help-inline-link {
+  display: inline;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  background: transparent;
+  text-decoration: underline;
+}
+.help-table {
+  overflow-x: auto;
+}
+.help-table table {
+  width: 100%;
+  min-width: 450px;
+  border-collapse: collapse;
+}
+.help-table td,
+.help-table th {
+  white-space: normal;
+  padding: 9px;
+  border: 1px solid var(--border);
+}
+.help-diagnostics {
+  border-top: 1px solid var(--border);
+  padding-top: 20px;
+}
+.help-diagnostics label {
+  display: grid;
+  gap: 8px;
+  margin-top: 16px;
+}
+.help-diagnostics textarea {
+  width: 100%;
+  font-family: monospace;
+}
+@media (max-width: 700px) {
+  .help-shell {
+    grid-template-columns: 210px minmax(0, 1fr);
+  }
+  .help-header {
+    flex-wrap: wrap;
+  }
+  .help-article {
+    padding: 20px 16px;
+  }
+}

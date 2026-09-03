@@ -6,6 +6,11 @@ authors = ["OfferTrack contributors"]
 edition = "2024"
 license = "MIT"
 rust-version = "1.98"
+default-run = "offertrack"
+
+[[bin]]
+name = "offertrack-cli"
+path = "src/bin/offertrack-cli.rs"
 
 [lib]
 name = "offertrack_lib"
@@ -19,7 +24,8 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "serd
 fs2 = "0.4"
 open = "5"
 notify = "8"
-rusqlite = { version = "0.39", features = ["bundled"] }
+rusqlite = { version = "0.39", features = ["bundled", "backup"] }
+rust_xlsxwriter = "=0.99.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -34,3 +40,4 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem", "Win32
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "8", default-features = false, features = ["deflate"] }

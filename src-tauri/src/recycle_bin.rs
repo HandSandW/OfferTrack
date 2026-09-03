@@ -4,6 +4,8 @@ use chrono::{SecondsFormat, Utc};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
+pub mod backups;
+
 use crate::{
     domain::{EmptyTrashResult, TrashEntry},
     error::CoreError,
@@ -468,7 +470,25 @@ fn remove_tree_with_identity(
     path: &Path,
     expected_identity: Option<&str>,
 ) -> Result<(), CoreError> {
-    let recycle_root = warehouse_root.join("recycle-bin").join("records");
+    remove_tree_in_area(warehouse_root, path, TrashArea::Records, expected_identity)
+}
+
+// Closed internal allowlist: never accept a caller-provided deletion root.
+enum TrashArea {
+    Records,
+    Backups,
+}
+
+fn remove_tree_in_area(
+    warehouse_root: &Path,
+    path: &Path,
+    area: TrashArea,
+    expected_identity: Option<&str>,
+) -> Result<(), CoreError> {
+    let recycle_root = warehouse_root.join("recycle-bin").join(match area {
+        TrashArea::Records => "records",
+        TrashArea::Backups => "backups",
+    });
     // Do not canonicalize a redirected recycle-bin and accidentally grant its
     // destination deletion authority. Freeze Windows ancestors while deleting.
     filesystem::validate_no_reparse(warehouse_root, path)?;

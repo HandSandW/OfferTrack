@@ -1,9 +1,28 @@
 import { useCallback, useEffect, useState } from "react";
+import { ThemeProvider } from "./features/theme/ThemeProvider";
+import { ThemeSettings } from "./features/theme/ThemeSettings";
+import { helpApi } from "./features/help/api";
+import {
+  AgentSnapshotProvider,
+  SnapshotNotice,
+} from "./features/agent/AgentSnapshotProvider";
 import { listen } from "@tauri-apps/api/event";
 import type { WarehouseSummary } from "./contracts";
 import { selectDirectory } from "./lib/dialog";
 import { desktopApi, OfferTrackError } from "./lib/tauri";
 import { ApplicationPage } from "./features/applications/ApplicationPage";
+import { OverviewPage } from "./features/productivity/OverviewPage";
+import { ProductivityPage } from "./features/productivity/ProductivityPage";
+import {
+  OverviewProvider,
+  ReminderBanner,
+} from "./features/productivity/OverviewProvider";
+import type {
+  Drilldown,
+  ScheduleScope,
+} from "./features/productivity/contracts";
+import { FullBackupPanel } from "./features/backup/FullBackupPanel";
+import { ExternalDatabasePanel } from "./features/backup/ExternalDatabasePanel";
 import { WorkflowTemplatesPage } from "./features/workflows/WorkflowTemplatesPage";
 import { DraftGuardProvider } from "./shared/DraftGuardProvider";
 import { useDraftGuard, useDraftState } from "./shared/draftGuard";
@@ -15,7 +34,7 @@ import {
 const pages = [
   { id: "overview", label: "概览", phase: 1 },
   { id: "applications", label: "投递记录", phase: 2 },
-  { id: "tasks", label: "待办与提醒", phase: 3 },
+  { id: "tasks", label: "待办与日程", phase: 3 },
   { id: "templates", label: "流程模板", phase: 2 },
   { id: "archive", label: "已归档", phase: 2 },
   { id: "recycle", label: "回收站", phase: 2 },
@@ -64,9 +83,11 @@ function WarehouseCard({ warehouse }: { warehouse: WarehouseSummary }) {
 
 export function App() {
   return (
-    <DraftGuardProvider>
-      <AppContent />
-    </DraftGuardProvider>
+    <ThemeProvider>
+      <DraftGuardProvider>
+        <AppContent />
+      </DraftGuardProvider>
+    </ThemeProvider>
   );
 }
 
@@ -77,6 +98,17 @@ function AppContent() {
   const [rememberedPath, setRememberedPath] = useState<string | null>(null);
   const [notice, setNotice] = useState<Notice | null>(null);
   const [busy, setBusy] = useState(true);
+  const [destination, setDestination] = useState<{
+    context: string;
+    drilldown?: Drilldown;
+    taskId?: string | undefined;
+    eventId?: string;
+    schedule?: ScheduleScope;
+    create?: boolean;
+  } | null>(null);
+  const context = `${warehouse?.warehouseId}:${warehouse?.displayPath}`;
+  const currentDestination =
+    destination?.context === context ? destination : null;
   useDraftState(false, busy, "数据仓库操作");
 
   const reportError = useCallback((error: unknown, lockedPath?: string) => {
@@ -168,6 +200,25 @@ function AppContent() {
     }
   };
 
+  const openTransferred = async (path: string) => {
+    if (!(await confirmLeave())) return;
+    setBusy(true);
+    setNotice(null);
+    try {
+      const next = await desktopApi.openWarehouse(path);
+      setWarehouse(next);
+      setRememberedPath(path);
+      setNotice({
+        kind: "info",
+        text: "已切换到验证后的仓库；原仓库和完整备份保持不动。",
+      });
+    } catch (error: unknown) {
+      reportError(error, path);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const openReadOnly = async (path: string) => {
     if (!(await confirmLeave())) return;
     setBusy(true);
@@ -197,7 +248,19 @@ function AppContent() {
 
   const navigate = useCallback(
     async (target: PageId) => {
+      if (target === "help") {
+        try {
+          await helpApi.open();
+        } catch {
+          setNotice({
+            kind: "error",
+            text: "帮助窗口未打开，请重试；当前编辑内容保持不变。",
+          });
+        }
+        return;
+      }
       if (target === page || !(await confirmLeave())) return;
+      setDestination(null);
       setPage(target);
     },
     [page, confirmLeave],
@@ -217,14 +280,13 @@ function AppContent() {
           break;
         case "overview":
         case "settings":
-        case "help":
           void navigate(event.payload);
           break;
+        case "help":
+          void navigate("help");
+          break;
         case "about":
-          setNotice({
-            kind: "info",
-            text: "OfferTrack 0.1.0 · 本地优先的求职投递管理工具 · MIT License",
-          });
+          void helpApi.open("about").catch(reportError);
           break;
       }
     });
@@ -232,130 +294,181 @@ function AppContent() {
     return () => {
       void unlisten.then((dispose) => dispose());
     };
-  }, [chooseAndOpen, closeWarehouse, navigate]);
+  }, [chooseAndOpen, closeWarehouse, navigate, reportError]);
+
+  useEffect(() => {
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === "F1") {
+        event.preventDefault();
+        void navigate("help");
+      }
+    };
+    window.addEventListener("keydown", keydown);
+    const unlisten = listen("help-open-failed", () =>
+      setNotice({
+        kind: "error",
+        text: "帮助窗口未打开，请重试；当前编辑内容保持不变。",
+      }),
+    );
+    const stopLogs = listen("help-logs-failed", () =>
+      setNotice({
+        kind: "error",
+        text: "日志目录无法安全打开。可在帮助的诊断信息章节查看说明；未创建或删除文件。",
+      }),
+    );
+    return () => {
+      window.removeEventListener("keydown", keydown);
+      void unlisten.then(
+        (stop) => stop(),
+        () => undefined,
+      );
+      void stopLogs.then(
+        (stop) => stop(),
+        () => undefined,
+      );
+    };
+  }, [navigate]);
 
   const selectedPage = pages.find((item) => item.id === page) ?? pages[0];
+  const openDestination = async (
+    target: PageId,
+    details: {
+      drilldown?: Drilldown;
+      taskId?: string | undefined;
+      eventId?: string;
+      schedule?: ScheduleScope;
+      create?: boolean;
+    },
+  ) => {
+    if (!(await confirmLeave())) return;
+    setDestination({ context, ...details });
+    setPage(target);
+  };
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark" aria-hidden="true">
-            O
-          </span>
-          <div>
-            <strong>OfferTrack</strong>
-            <span>离线求职管理</span>
-          </div>
-        </div>
-        <nav aria-label="主导航">
-          {pages.map((item) => (
-            <button
-              className={page === item.id ? "nav-item active" : "nav-item"}
-              disabled={busy}
-              key={item.id}
-              onClick={() => void navigate(item.id)}
-              type="button"
-            >
-              <span>{item.label}</span>
-              {item.phase > 1 && <small>阶段 {item.phase}</small>}
-            </button>
-          ))}
-        </nav>
-        <div className="sidebar-footer">
-          <span className={warehouse ? "status-dot online" : "status-dot"} />
-          {warehouse ? "仓库已连接" : "未选择仓库"}
-        </div>
-      </aside>
-
-      <main>
-        <header className="topbar">
-          <div>
-            <p className="eyebrow">OfferTrack / {selectedPage.label}</p>
-            <h1>{selectedPage.label}</h1>
-          </div>
-          <div className="top-actions">
-            <button
-              disabled={busy}
-              onClick={() => void chooseAndOpen(false)}
-              type="button"
-            >
-              打开仓库
-            </button>
-            <button
-              className="primary"
-              disabled={busy}
-              onClick={() => void chooseAndOpen(true)}
-              type="button"
-            >
-              新建仓库
-            </button>
-          </div>
-        </header>
-
-        <div
-          className={
-            page === "applications" || page === "archive"
-              ? "content content-wide"
-              : "content"
-          }
-        >
-          {notice && (
-            <div className={`notice ${notice.kind}`} role="alert">
-              <span>{notice.text}</span>
-              {notice.lockedPath && (
-                <button
-                  disabled={busy}
-                  onClick={() => void openReadOnly(notice.lockedPath!)}
-                  type="button"
-                >
-                  只读打开
-                </button>
-              )}
-            </div>
-          )}
-
-          {!warehouse && page !== "help" ? (
-            <section className="empty-state">
-              <div className="empty-icon" aria-hidden="true">
-                OT
+    <AgentSnapshotProvider
+      key={context}
+      warehouse={warehouse}
+      enabled={!!warehouse && !busy}
+    >
+      <OverviewProvider
+        key={context}
+        enabled={!!warehouse && !busy}
+        page={page}
+        onError={reportError}
+      >
+        <div className="app-shell">
+          <aside className="sidebar">
+            <div className="brand">
+              <span className="brand-mark" aria-hidden="true">
+                O
+              </span>
+              <div>
+                <strong>OfferTrack</strong>
+                <span>离线求职管理</span>
               </div>
-              <p className="eyebrow">尚未连接数据仓库</p>
-              <h2>先打开或新建本地数据仓库</h2>
-              <p>连接后即可管理投递、简历文件、归档和回收站。</p>
-              <div className="empty-actions">
+            </div>
+            <nav aria-label="主导航">
+              {pages.map((item) => (
                 <button
-                  className="primary"
-                  disabled={busy}
-                  onClick={() => void chooseAndOpen(true)}
+                  className={page === item.id ? "nav-item active" : "nav-item"}
+                  disabled={busy && item.id !== "help"}
+                  key={item.id}
+                  onClick={() => void navigate(item.id)}
                   type="button"
                 >
-                  新建数据仓库
+                  <span>{item.label}</span>
+                  {item.phase > 1 && <small>阶段 {item.phase}</small>}
+                </button>
+              ))}
+            </nav>
+            <div className="sidebar-footer">
+              <span
+                className={warehouse ? "status-dot online" : "status-dot"}
+              />
+              {warehouse ? "仓库已连接" : "未选择仓库"}
+            </div>
+          </aside>
+
+          <main>
+            <header className="topbar">
+              <div>
+                <p className="eyebrow">OfferTrack / {selectedPage.label}</p>
+                <h1>{selectedPage.label}</h1>
+              </div>
+              <div className="top-actions">
+                <button
+                  type="button"
+                  onClick={() =>
+                    void helpApi.open(page).catch(() =>
+                      setNotice({
+                        kind: "error",
+                        text: "本页帮助未打开，请重试；当前编辑内容保持不变。",
+                      }),
+                    )
+                  }
+                >
+                  本页帮助
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() => void navigate("settings")}
+                  type="button"
+                >
+                  备份与迁移
                 </button>
                 <button
                   disabled={busy}
                   onClick={() => void chooseAndOpen(false)}
                   type="button"
                 >
-                  打开已有仓库
+                  打开仓库
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy}
+                  onClick={() => void chooseAndOpen(true)}
+                  type="button"
+                >
+                  新建仓库
                 </button>
               </div>
-            </section>
-          ) : page === "overview" ? (
-            <>
-              {warehouse ? (
-                <WarehouseCard warehouse={warehouse} />
-              ) : (
+            </header>
+
+            <div
+              className={
+                page === "applications" || page === "archive"
+                  ? "content content-wide"
+                  : "content"
+              }
+            >
+              {warehouse && <SnapshotNotice />}
+              {warehouse && page !== "overview" && (
+                <ReminderBanner onOpen={() => void navigate("overview")} />
+              )}
+              {notice && (
+                <div className={`notice ${notice.kind}`} role="alert">
+                  <span>{notice.text}</span>
+                  {notice.lockedPath && (
+                    <button
+                      disabled={busy}
+                      onClick={() => void openReadOnly(notice.lockedPath!)}
+                      type="button"
+                    >
+                      只读打开
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {!warehouse && page !== "settings" ? (
                 <section className="empty-state">
                   <div className="empty-icon" aria-hidden="true">
                     OT
                   </div>
-                  <p className="eyebrow">开始使用</p>
-                  <h2>选择一个本地文件夹作为数据仓库</h2>
-                  <p>
-                    投递数据、简历和备份将保存在你指定的位置。OfferTrack
-                    不依赖云服务，也不会把真实数据写入应用安装目录。
-                  </p>
+                  <p className="eyebrow">尚未连接数据仓库</p>
+                  <h2>先打开或新建本地数据仓库</h2>
+                  <p>连接后即可管理投递、简历文件、归档和回收站。</p>
                   <div className="empty-actions">
                     <button
                       className="primary"
@@ -375,154 +488,137 @@ function AppContent() {
                     {rememberedPath && (
                       <button
                         disabled={busy}
-                        onClick={() => void openRemembered()}
                         type="button"
+                        onClick={() => void openRemembered()}
                       >
                         打开上次仓库
                       </button>
                     )}
                   </div>
                 </section>
+              ) : page === "settings" ? (
+                <div
+                  className="settings-stack"
+                  key={`${warehouse?.warehouseId}:${warehouse?.displayPath}`}
+                >
+                  <ThemeSettings />
+                  <FullBackupPanel
+                    writable={warehouse?.accessMode === "write"}
+                    disabled={busy}
+                    onError={reportError}
+                    onOpen={openTransferred}
+                  />
+                  <ExternalDatabasePanel
+                    disabled={busy}
+                    onError={reportError}
+                    onOpen={openTransferred}
+                  />
+                  {warehouse && (
+                    <SettingsPage
+                      onError={reportError}
+                      writable={!busy && warehouse.accessMode === "write"}
+                    />
+                  )}
+                </div>
+              ) : page === "overview" ? (
+                <>
+                  <OverviewPage
+                    key={context}
+                    writable={!busy && warehouse!.accessMode === "write"}
+                    onError={reportError}
+                    onDrilldown={(drilldown) =>
+                      void openDestination("applications", { drilldown })
+                    }
+                    onTask={(taskId) =>
+                      void openDestination("tasks", { taskId })
+                    }
+                    onEvent={(eventId) =>
+                      void openDestination("tasks", { eventId })
+                    }
+                    onSchedule={(schedule) =>
+                      void openDestination("tasks", { schedule })
+                    }
+                    onSettings={() => void navigate("settings")}
+                    onNew={() =>
+                      void openDestination("applications", { create: true })
+                    }
+                  />
+                  <WarehouseCard warehouse={warehouse!} />
+                </>
+              ) : page === "tasks" ? (
+                <ProductivityPage
+                  key={`${context}:${JSON.stringify(currentDestination)}`}
+                  writable={!busy && warehouse!.accessMode === "write"}
+                  onError={reportError}
+                  initialTaskId={currentDestination?.taskId}
+                  initialEventId={currentDestination?.eventId}
+                  initialSchedule={currentDestination?.schedule}
+                  onOpenApplication={(id, archived) =>
+                    void openDestination(
+                      archived ? "archive" : "applications",
+                      {
+                        drilldown: { label: "日程关联投递", ids: [id] },
+                      },
+                    )
+                  }
+                />
+              ) : page === "applications" ? (
+                <ApplicationPage
+                  key={`${context}:active:${currentDestination?.drilldown?.label ?? ""}:${currentDestination?.create ?? false}`}
+                  drilldown={currentDestination?.drilldown}
+                  initialCreateOpen={currentDestination?.create}
+                  onError={reportError}
+                  scope="active"
+                  writable={!busy && warehouse!.accessMode === "write"}
+                />
+              ) : page === "archive" ? (
+                <ApplicationPage
+                  key={`${warehouse!.warehouseId}:${warehouse!.displayPath}:archived`}
+                  drilldown={currentDestination?.drilldown}
+                  onError={reportError}
+                  scope="archived"
+                  writable={!busy && warehouse!.accessMode === "write"}
+                />
+              ) : page === "templates" ? (
+                <WorkflowTemplatesPage
+                  key={`${warehouse!.warehouseId}:${warehouse!.displayPath}`}
+                  onError={reportError}
+                  writable={!busy && warehouse!.accessMode === "write"}
+                />
+              ) : page === "recycle" ? (
+                <RecycleBinPage
+                  key={`${warehouse!.warehouseId}:${warehouse!.displayPath}`}
+                  onError={reportError}
+                  writable={!busy && warehouse!.accessMode === "write"}
+                />
+              ) : (
+                <section className="placeholder">
+                  <p className="eyebrow">功能边界</p>
+                  <h2>{selectedPage.label}</h2>
+                  <p>
+                    {selectedPage.phase === 1
+                      ? "阶段 1 已建立此页面入口；具体设置项会随对应功能分阶段接入。"
+                      : `该业务功能计划在阶段 ${selectedPage.phase} 实现，本阶段不提前加入占位数据。`}
+                  </p>
+                </section>
               )}
+            </div>
 
-              <section className="stage-grid" aria-label="当前能力">
-                <article>
-                  <span>01</span>
-                  <h3>投递记录</h3>
-                  <p>
-                    阶段 2 已支持记录、流程、面试轮次、筛选分组和持久化视图。
-                  </p>
-                </article>
-                <article>
-                  <span>02</span>
-                  <h3>独立文件夹</h3>
-                  <p>
-                    每条投递拥有独立目录，可直接通过文件管理器维护简历材料。
-                  </p>
-                </article>
-                <article>
-                  <span>03</span>
-                  <h3>安全回收站</h3>
-                  <p>删除先移入仓库回收站，确认清空时才永久删除。</p>
-                </article>
-              </section>
-            </>
-          ) : page === "applications" ? (
-            <ApplicationPage
-              key={`${warehouse!.warehouseId}:active`}
-              onError={reportError}
-              scope="active"
-              writable={!busy && warehouse!.accessMode === "write"}
-            />
-          ) : page === "archive" ? (
-            <ApplicationPage
-              key={`${warehouse!.warehouseId}:archived`}
-              onError={reportError}
-              scope="archived"
-              writable={!busy && warehouse!.accessMode === "write"}
-            />
-          ) : page === "templates" ? (
-            <WorkflowTemplatesPage
-              key={warehouse!.warehouseId}
-              onError={reportError}
-              writable={!busy && warehouse!.accessMode === "write"}
-            />
-          ) : page === "recycle" ? (
-            <RecycleBinPage
-              key={warehouse!.warehouseId}
-              onError={reportError}
-              writable={!busy && warehouse!.accessMode === "write"}
-            />
-          ) : page === "settings" ? (
-            <SettingsPage
-              key={warehouse!.warehouseId}
-              onError={reportError}
-              writable={!busy && warehouse!.accessMode === "write"}
-            />
-          ) : page === "help" ? (
-            <section className="placeholder help-content">
-              <p className="eyebrow">阶段 2 使用说明</p>
-              <h2>帮助</h2>
-              <ol>
-                <li>
-                  点击“新建仓库”，选择一个空文件夹；OfferTrack
-                  会建立版本化数据库和附件目录。
-                </li>
-                <li>
-                  已有仓库使用“打开仓库”。应用会校验仓库格式和数据库迁移版本。
-                </li>
-                <li>同一仓库只能有一个写入实例；发生占用时可选择只读打开。</li>
-                <li>
-                  在“投递记录”中新建记录。首次切换到“已投递”时，系统自动填写当天投递日期。
-                </li>
-                <li>
-                  单击一行打开右侧详情；资料、招聘阶段、面试轮次、文件和变更历史分别管理。
-                </li>
-                <li>
-                  资料修改后点击“保存修改”。新建表单、资料或流程表单未保存时，离开页面或关闭窗口会提示；保存进行中请等待完成。
-                </li>
-                <li>
-                  “流程”中可编辑当前投递的阶段名称与颜色；面试轮次可记录本地计划/完成时间、状态、结果和备注。保存为模板不会改变已有投递。
-                </li>
-                <li>
-                  “调整阶段顺序”仅改变当前投递的展示顺序；“流程模板”页可编辑、复制模板并设为默认，只影响以后新建的投递。进度条表示流程位置，不代表成功概率。
-                </li>
-                <li>
-                  “管理辅助状态”可改名、添加或排序当前投递及面试轮次的状态。模板辅助状态单独管理，历史保留当时名称；被使用的自定义状态不能移除。
-                </li>
-                <li>
-                  可以直接在投递文件夹中增删文件，应用会监听变化，也可点击“重新扫描”。
-                </li>
-                <li>
-                  文件按子目录折叠显示；双击文件名用默认应用打开。右键或“更多”可选择其他应用、打开所在文件夹或复制路径，PDF
-                  还可选择已检测到的浏览器。网址
-                  Ctrl+点击使用默认浏览器，右键可更换浏览器或复制链接。
-                </li>
-                <li>
-                  “复制公司信息”建立新岗位；“复制完整记录”会复制数据和文件，但副本始终使用独立目录。
-                </li>
-                <li>
-                  归档不会删除内容；删除会移入 OfferTrack
-                  回收站，清空回收站需再次确认。
-                </li>
-                <li>
-                  恢复遇到重名会使用新目录并显示实际位置，不覆盖原位置。清空不可撤销；失败项剩余内容保留，可释放占用后重试。
-                </li>
-                <li>
-                  看到网络盘、云同步或移动磁盘提示时，请避免多设备同时写入并及时备份。
-                </li>
-              </ol>
-              <p>
-                概览统计、待办提醒、备份恢复、导出与 Agent
-                接口属于后续阶段，本阶段未提前实现。
-              </p>
-            </section>
-          ) : (
-            <section className="placeholder">
-              <p className="eyebrow">功能边界</p>
-              <h2>{selectedPage.label}</h2>
-              <p>
-                {selectedPage.phase === 1
-                  ? "阶段 1 已建立此页面入口；具体设置项会随对应功能分阶段接入。"
-                  : `该业务功能计划在阶段 ${selectedPage.phase} 实现，本阶段不提前加入占位数据。`}
-              </p>
-            </section>
-          )}
+            {warehouse && (
+              <footer className="workspace-footer">
+                <span>仓库 ID：{warehouse.warehouseId.slice(0, 8)}…</span>
+                <button
+                  disabled={busy}
+                  onClick={() => void closeWarehouse()}
+                  type="button"
+                >
+                  关闭仓库
+                </button>
+              </footer>
+            )}
+          </main>
         </div>
-
-        {warehouse && (
-          <footer className="workspace-footer">
-            <span>仓库 ID：{warehouse.warehouseId.slice(0, 8)}…</span>
-            <button
-              disabled={busy}
-              onClick={() => void closeWarehouse()}
-              type="button"
-            >
-              关闭仓库
-            </button>
-          </footer>
-        )}
-      </main>
-    </div>
+      </OverviewProvider>
+    </AgentSnapshotProvider>
   );
 }

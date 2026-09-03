@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "help-capability",
+  "description": "离线帮助只订阅自身导航事件，不授予业务、窗口管理、文件选择或事件发送权限",
+  "windows": ["help"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

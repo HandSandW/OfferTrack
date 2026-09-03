@@ -5,6 +5,9 @@ import { Modal } from "../../shared/Modal";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
 import { companyTypes, initialCreate } from "../applications/tableModel";
 import { RecoveryDiagnosticsPanel } from "../documents/RecoveryDiagnosticsPanel";
+import { DatabaseBackupPanel } from "../backup/DatabaseBackupPanel";
+import { ReminderSettings } from "../productivity/ReminderSettings";
+import { AgentAccessPanel } from "../agent/AgentAccessPanel";
 import {
   fieldDraft,
   fieldRequest,
@@ -19,6 +22,9 @@ function errorText(error: unknown) {
 export function SettingsPage(props: Props) {
   return (
     <section className="settings-grid">
+      <ReminderSettings {...props} />
+      <AgentAccessPanel {...props} />
+      <DatabaseBackupPanel {...props} />
       <FieldsPanel {...props} />
       <FoldersPanel {...props} />
       <RecoveryDiagnosticsPanel onError={props.onError} />

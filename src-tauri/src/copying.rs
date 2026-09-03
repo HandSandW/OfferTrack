@@ -413,7 +413,7 @@ fn open_checked_with_sharing(path: &Path, _moving: bool) -> Result<File, CoreErr
 }
 
 #[cfg(windows)]
-fn directory_identity(path: &Path) -> Result<String, CoreError> {
+pub(crate) fn directory_identity(path: &Path) -> Result<String, CoreError> {
     directory_identity_from_handle(&open_checked(path)?)
 }
 
@@ -442,21 +442,21 @@ pub(crate) fn directory_identity_from_handle(file: &File) -> Result<String, Core
 }
 
 #[cfg(not(windows))]
-fn directory_identity(_path: &Path) -> Result<String, CoreError> {
+pub(crate) fn directory_identity(_path: &Path) -> Result<String, CoreError> {
     Err(CoreError::FileOperation)
 }
 
 #[cfg(windows)]
-fn rename_no_replace(source: &Path, target: &Path, identity: &str) -> Result<(), CoreError> {
-    use std::os::windows::{ffi::OsStrExt, fs::OpenOptionsExt, io::AsRawHandle};
-    use windows_sys::Wdk::Storage::FileSystem::{
-        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
-    };
+pub(crate) fn rename_no_replace(
+    source: &Path,
+    target: &Path,
+    identity: &str,
+) -> Result<(), CoreError> {
+    use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{
         DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_READ,
         FILE_SHARE_READ,
     };
-    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     let handle = fs::OpenOptions::new()
         .access_mode(FILE_GENERIC_READ | DELETE)
         .share_mode(FILE_SHARE_READ)
@@ -473,6 +473,17 @@ fn rename_no_replace(source: &Path, target: &Path, identity: &str) -> Result<(),
     if directory_identity_from_handle(&handle)? != identity {
         return Err(CoreError::CopyRecovery);
     }
+    rename_handle_no_replace(&handle, target)
+}
+
+/// Publish the exact already-verified object through its live DELETE-capable handle.
+#[cfg(windows)]
+pub(crate) fn rename_handle_no_replace(handle: &File, target: &Path) -> Result<(), CoreError> {
+    use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_RENAME_INFORMATION, FileRenameInformation, NtSetInformationFile,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
     let target_parent =
         open_checked_with_sharing(target.parent().ok_or(CoreError::UnsafePath)?, true)?;
     // Native rename uses the already-open destination directory and one leaf
@@ -524,7 +535,16 @@ fn rename_no_replace(source: &Path, target: &Path, identity: &str) -> Result<(),
 }
 
 #[cfg(not(windows))]
-fn rename_no_replace(_source: &Path, _target: &Path, _identity: &str) -> Result<(), CoreError> {
+pub(crate) fn rename_handle_no_replace(_handle: &File, _target: &Path) -> Result<(), CoreError> {
+    Err(CoreError::FileOperation)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn rename_no_replace(
+    _source: &Path,
+    _target: &Path,
+    _identity: &str,
+) -> Result<(), CoreError> {
     Err(CoreError::FileOperation)
 }
 

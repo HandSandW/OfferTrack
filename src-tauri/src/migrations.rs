@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::error::CoreError;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 7;
+pub const CURRENT_SCHEMA_VERSION: i64 = 9;
 
 struct Migration {
     version: i64,
@@ -46,6 +46,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "metadata_revisions",
         sql: include_str!("../migrations/0007_metadata_revisions.sql"),
+    },
+    Migration {
+        version: 8,
+        name: "tasks_and_reminders",
+        sql: include_str!("../migrations/0008_tasks_and_reminders.sql"),
+    },
+    Migration {
+        version: 9,
+        name: "recruitment_schedule",
+        sql: include_str!("../migrations/0009_recruitment_schedule.sql"),
     },
 ];
 
@@ -128,8 +138,105 @@ pub fn validate_schema(connection: &Connection) -> Result<(), CoreError> {
 }
 
 #[cfg(test)]
+pub(crate) fn fixture_remove_migration_eight(connection: &Connection) {
+    // Synthetic fixture only: reconstruct the actual historical schema for upgrade tests.
+    fixture_remove_migration_nine(connection);
+    connection
+        .execute_batch(
+            "ALTER TABLE tasks DROP COLUMN revision; ALTER TABLE tasks DROP COLUMN remind_at_utc;
+        ALTER TABLE reminder_rules DROP COLUMN revision; DELETE FROM reminder_rules;
+        DROP TABLE reminder_actions; DELETE FROM schema_migrations WHERE version=8;",
+        )
+        .unwrap();
+}
+
+#[cfg(test)]
+pub(crate) fn fixture_remove_migration_nine(connection: &Connection) {
+    connection.execute_batch("DROP TRIGGER event_round_owner_insert; DROP TRIGGER event_round_owner_update;
+        DROP INDEX idx_event_interview; ALTER TABLE recruitment_events DROP COLUMN interview_round_id;
+        ALTER TABLE recruitment_events DROP COLUMN revision; ALTER TABLE recruitment_events DROP COLUMN deadline_at_utc;
+        ALTER TABLE recruitment_events DROP COLUMN location; ALTER TABLE recruitment_events DROP COLUMN meeting_url;
+        ALTER TABLE recruitment_events DROP COLUMN result; DELETE FROM schema_migrations WHERE version=9;").unwrap();
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_nine_rolls_back_all_added_columns_when_index_creation_fails() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        configure_connection(&connection).unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at_utc TEXT NOT NULL)").unwrap();
+        for migration in &MIGRATIONS[..8] {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        connection
+            .execute_batch("CREATE INDEX idx_event_interview ON recruitment_events(title)")
+            .unwrap();
+        assert!(migrate(&mut connection).is_err());
+        assert!(
+            connection
+                .prepare("SELECT revision FROM recruitment_events")
+                .is_err()
+        );
+        assert!(
+            connection
+                .prepare("SELECT interview_round_id FROM recruitment_events")
+                .is_err()
+        );
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, 8);
+        connection
+            .execute_batch("DROP INDEX idx_event_interview")
+            .unwrap();
+        migrate(&mut connection).unwrap();
+        migrate(&mut connection).unwrap();
+        assert!(
+            connection
+                .prepare("SELECT revision,interview_round_id FROM recruitment_events")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn migration_eight_preserves_tasks_and_rolls_back_on_rule_conflict() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at_utc TEXT NOT NULL)").unwrap();
+        for migration in &MIGRATIONS[..7] {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        connection.execute_batch("INSERT INTO tasks (id,title,notes,completed_at_utc,created_at_utc,updated_at_utc) VALUES ('old','保留待办','保留备注','2026-08-01T00:00:00Z','created','updated');
+            INSERT INTO reminder_rules (id,stable_key,display_name,threshold_json,created_at_utc,updated_at_utc) VALUES ('conflict','overdue','外部规则','{}','created','updated');").unwrap();
+        assert!(migrate(&mut connection).is_err());
+        assert!(connection.prepare("SELECT revision FROM tasks").is_err());
+        assert!(
+            connection
+                .prepare("SELECT * FROM reminder_actions")
+                .is_err()
+        );
+        connection
+            .execute("DELETE FROM reminder_rules WHERE id='conflict'", [])
+            .unwrap();
+        migrate(&mut connection).unwrap();
+        migrate(&mut connection).unwrap();
+        let task: (String,String,String,i64,Option<String>) = connection.query_row("SELECT title,notes,completed_at_utc,revision,remind_at_utc FROM tasks WHERE id='old'",[],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?))).unwrap();
+        assert_eq!(
+            task,
+            (
+                "保留待办".into(),
+                "保留备注".into(),
+                "2026-08-01T00:00:00Z".into(),
+                1,
+                None
+            )
+        );
+        assert_eq!(crate::tasks::rules(&connection).unwrap().len(), 7);
+    }
 
     #[test]
     fn migration_seven_preserves_metadata_and_rolls_back_duplicate_default_failure() {

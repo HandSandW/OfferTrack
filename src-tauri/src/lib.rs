@@ -1,16 +1,30 @@
+mod agent_access;
+pub mod agent_cli;
+mod agent_mcp;
+mod agent_write;
 mod applications;
 mod auxiliary_states;
+mod backup_archive;
+mod batch;
 mod copying;
+mod database_backup;
 mod domain;
 mod error;
+mod export;
 mod file_health;
 mod filesystem;
+mod full_backup;
+mod help;
 mod migrations;
+mod overview;
 mod platform;
 mod preferences;
+mod recruitment;
 mod recycle_bin;
+mod schedule;
 mod session_access;
 mod storage;
+mod tasks;
 mod views;
 mod warehouse;
 mod workflows;
@@ -53,6 +67,7 @@ use crate::{
 struct AppState {
     warehouse: Mutex<Option<WarehouseSession>>,
     trash_confirmation: Mutex<Option<TrashConfirmation>>,
+    backup_trash_confirmation: Mutex<Option<recycle_bin::backups::Confirmation>>,
     file_watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
@@ -132,7 +147,6 @@ fn install_session(
         .path()
         .app_config_dir()
         .map_err(|_| CoreError::Storage)?;
-    preferences::remember_warehouse(config_dir, session.root().to_path_buf())?;
     applications::scan_all_documents(&mut session)?;
     let watch_root = session.root().join("applications");
     let watcher_app = app.clone();
@@ -149,6 +163,8 @@ fn install_session(
         .watch(&watch_root, RecursiveMode::Recursive)
         .map_err(|_| CoreError::FileOperation)?;
     let summary = session.summary();
+    // Do not remember a failed restore/switch target before validation and watcher setup succeed.
+    preferences::remember_warehouse(config_dir, session.root().to_path_buf())?;
     *active = Some(session);
     *state
         .trash_confirmation
@@ -184,12 +200,401 @@ fn read_session<T>(
     operation(active.as_ref().ok_or(CoreError::WarehouseNotOpen)?).map_err(Into::into)
 }
 
+#[tauri::command]
+fn get_export_catalog(state: State<'_, AppState>) -> Result<export::Catalog, AppErrorPayload> {
+    read_session(&state, export::catalog)
+}
+
+#[tauri::command]
+fn get_agent_connection(
+    state: State<'_, AppState>,
+) -> Result<agent_mcp::config::Connection, AppErrorPayload> {
+    read_session(&state, |s| {
+        let executable = std::env::current_exe().map_err(|_| CoreError::FileMissing)?;
+        agent_mcp::config::connection(&executable, s.root())
+    })
+}
+
+#[tauri::command]
+fn get_agent_permission(
+    state: State<'_, AppState>,
+) -> Result<agent_write::settings::Permission, AppErrorPayload> {
+    read_session(&state, |s| agent_write::settings::get(s.connection()))
+}
+
+#[tauri::command]
+fn set_agent_permission(
+    state: State<'_, AppState>,
+    enabled: bool,
+    revision: i64,
+) -> Result<agent_write::settings::Permission, AppErrorPayload> {
+    write_session(&state, |s| agent_write::settings::set(s, enabled, revision))
+}
+
+#[tauri::command]
+fn list_agent_audit(
+    state: State<'_, AppState>,
+) -> Result<Vec<agent_write::AuditItem>, AppErrorPayload> {
+    read_session(&state, agent_write::audit_list)
+}
+
+#[tauri::command]
+fn get_agent_audit(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<serde_json::Value, AppErrorPayload> {
+    read_session(&state, |s| agent_write::audit_detail(s, &id))
+}
+
+#[tauri::command]
+async fn check_agent_snapshot(
+    app: tauri::AppHandle,
+    warehouse_id: String,
+    warehouse_path: String,
+) -> Result<agent_access::freshness::Report, AppErrorPayload> {
+    tauri::async_runtime::spawn_blocking(move || {
+        read_session(&app.state::<AppState>(), |s| {
+            // These strings are identity assertions, NEVER filesystem operation targets.
+            if s.summary().warehouse_id.to_string() != warehouse_id
+                || s.summary().display_path != warehouse_path
+            {
+                return Err(CoreError::AgentWarehouseChanged);
+            }
+            Ok(agent_access::freshness::check(s, s.is_writable()))
+        })
+    })
+    .await
+    .map_err(|_| AppErrorPayload::from(CoreError::StateUnavailable))?
+}
+
+#[tauri::command]
+async fn create_agent_snapshot(
+    app: tauri::AppHandle,
+) -> Result<agent_access::Created, AppErrorPayload> {
+    let expected = read_session(&app.state::<AppState>(), |s| {
+        Ok((s.summary().warehouse_id, s.root().to_path_buf()))
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        // A derived generation only records its checkpoint; no daily backup or business mutation.
+        read_session(&app.state::<AppState>(), |s| {
+            if s.summary().warehouse_id != expected.0 || s.root() != expected.1 {
+                return Err(CoreError::RevisionConflict);
+            }
+            agent_access::create(s)
+        })
+    })
+    .await
+    .map_err(|_| AppErrorPayload::from(CoreError::StateUnavailable))?
+}
+
+#[tauri::command]
+async fn export_applications(
+    app: tauri::AppHandle,
+    parent_directory: String,
+    request: export::Request,
+) -> Result<export::Created, AppErrorPayload> {
+    let expected = read_session(&app.state::<AppState>(), |s| {
+        Ok((s.summary().warehouse_id, s.root().to_path_buf()))
+    })?;
+    tauri::async_runtime::spawn_blocking(move || {
+        // Deliberately use a read session: exporting must not trigger daily backups or writes.
+        read_session(&app.state::<AppState>(), |s| {
+            if s.summary().warehouse_id != expected.0 || s.root() != expected.1 {
+                return Err(CoreError::RevisionConflict);
+            }
+            export::create(s, &PathBuf::from(parent_directory), &request)
+        })
+    })
+    .await
+    .map_err(|_| AppErrorPayload::from(CoreError::StateUnavailable))?
+}
+
 fn write_session<T>(
     state: &AppState,
     operation: impl FnOnce(&mut WarehouseSession) -> Result<T, CoreError>,
 ) -> Result<T, AppErrorPayload> {
     let mut active = session_access::try_lock(&state.warehouse)?;
-    operation(active.as_mut().ok_or(CoreError::WarehouseNotOpen)?).map_err(Into::into)
+    let session = active.as_mut().ok_or(CoreError::WarehouseNotOpen)?;
+    database_backup::ensure_daily(session)?;
+    operation(session).map_err(Into::into)
+}
+
+#[tauri::command]
+fn list_database_backups(
+    state: State<'_, AppState>,
+) -> Result<database_backup::BackupCatalog, AppErrorPayload> {
+    read_session(&state, database_backup::catalog)
+}
+
+#[tauri::command]
+fn get_overview(state: State<'_, AppState>) -> Result<overview::Overview, AppErrorPayload> {
+    read_session(&state, |s| {
+        overview::get(s, chrono::Local::now().fixed_offset())
+    })
+}
+
+#[tauri::command]
+fn list_tasks(state: State<'_, AppState>) -> Result<Vec<tasks::Task>, AppErrorPayload> {
+    read_session(&state, |s| tasks::list(s.connection()))
+}
+
+#[tauri::command]
+fn list_recruitment_events(
+    state: State<'_, AppState>,
+) -> Result<Vec<recruitment::Event>, AppErrorPayload> {
+    read_session(&state, |s| recruitment::list(s.connection()))
+}
+
+#[tauri::command]
+fn save_recruitment_event(
+    state: State<'_, AppState>,
+    request: recruitment::SaveEvent,
+) -> Result<recruitment::Event, AppErrorPayload> {
+    write_session(&state, |s| recruitment::save(s, &request))
+}
+
+#[tauri::command]
+fn complete_recruitment_event(
+    state: State<'_, AppState>,
+    id: String,
+    revision: i64,
+    completed: bool,
+) -> Result<recruitment::Event, AppErrorPayload> {
+    write_session(&state, |s| {
+        recruitment::complete(s, &id, revision, completed)
+    })
+}
+
+#[tauri::command]
+fn save_task(
+    state: State<'_, AppState>,
+    request: tasks::SaveTask,
+) -> Result<tasks::Task, AppErrorPayload> {
+    write_session(&state, |s| tasks::save(s, &request))
+}
+
+#[tauri::command]
+fn complete_task(
+    state: State<'_, AppState>,
+    id: String,
+    revision: i64,
+    completed: bool,
+) -> Result<tasks::Task, AppErrorPayload> {
+    write_session(&state, |s| tasks::complete(s, &id, revision, completed))
+}
+
+#[tauri::command]
+fn list_reminder_rules(
+    state: State<'_, AppState>,
+) -> Result<Vec<tasks::ReminderRule>, AppErrorPayload> {
+    read_session(&state, |s| tasks::rules(s.connection()))
+}
+
+#[tauri::command]
+fn save_reminder_rules(
+    state: State<'_, AppState>,
+    rules: Vec<tasks::ReminderRule>,
+) -> Result<Vec<tasks::ReminderRule>, AppErrorPayload> {
+    write_session(&state, |s| tasks::save_rules(s, &rules))
+}
+
+#[tauri::command]
+fn respond_to_reminder(
+    state: State<'_, AppState>,
+    key: String,
+    fingerprint: String,
+    snooze: bool,
+) -> Result<(), AppErrorPayload> {
+    write_session(&state, |s| overview::respond(s, &key, &fingerprint, snooze))
+}
+
+#[tauri::command]
+async fn create_full_backup(
+    app: tauri::AppHandle,
+    parent_directory: String,
+    include_recycle_bin: bool,
+) -> Result<full_backup::Created, AppErrorPayload> {
+    background_session_operation(app, move |session| {
+        full_backup::create(
+            session,
+            &PathBuf::from(parent_directory),
+            include_recycle_bin,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn preview_full_backup(
+    app: tauri::AppHandle,
+    archive_path: String,
+) -> Result<backup_archive::Preview, AppErrorPayload> {
+    background_optional_session_operation(app, move |_| {
+        full_backup::preview(&PathBuf::from(archive_path))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_full_backup(
+    app: tauri::AppHandle,
+    archive_path: String,
+    parent_directory: String,
+    expected_sha256: String,
+) -> Result<full_backup::Restored, AppErrorPayload> {
+    background_optional_session_operation(app, move |session| {
+        full_backup::restore(
+            &PathBuf::from(archive_path),
+            &PathBuf::from(parent_directory),
+            &expected_sha256,
+            session.map(|s| s.root()),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn migrate_warehouse(
+    app: tauri::AppHandle,
+    parent_directory: String,
+) -> Result<full_backup::Restored, AppErrorPayload> {
+    background_session_operation(app, move |session| {
+        full_backup::migrate(session, &PathBuf::from(parent_directory))
+    })
+    .await
+}
+
+async fn background_optional_session_operation<T: Send + 'static>(
+    app: tauri::AppHandle,
+    operation: impl FnOnce(Option<&WarehouseSession>) -> Result<T, CoreError> + Send + 'static,
+) -> Result<T, AppErrorPayload> {
+    let identity =
+        |session: &WarehouseSession| (session.summary().warehouse_id, session.root().to_path_buf());
+    let expected = session_access::try_lock(&app.state::<AppState>().warehouse)?
+        .as_ref()
+        .map(identity);
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let active = session_access::try_lock(&state.warehouse)?;
+        if active.as_ref().map(identity) != expected {
+            return Err(CoreError::RevisionConflict.into());
+        }
+        operation(active.as_ref()).map_err(AppErrorPayload::from)
+    })
+    .await
+    .map_err(|_| AppErrorPayload::from(CoreError::StateUnavailable))?
+}
+
+#[tauri::command]
+async fn preview_application_batch(
+    app: tauri::AppHandle,
+    request: batch::Request,
+) -> Result<batch::Preview, AppErrorPayload> {
+    background_session_operation(app, move |session| batch::preview(session, &request)).await
+}
+
+#[tauri::command]
+async fn preview_external_database_backup(
+    app: tauri::AppHandle,
+    directory: String,
+) -> Result<database_backup::ExternalPreview, AppErrorPayload> {
+    background_optional_session_operation(app, move |_| {
+        database_backup::preview_external(&PathBuf::from(directory))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_external_database_backup(
+    app: tauri::AppHandle,
+    directory: String,
+    parent_directory: String,
+    expected_fingerprint: String,
+) -> Result<database_backup::DatabaseRestore, AppErrorPayload> {
+    background_optional_session_operation(app, move |session| {
+        database_backup::restore_external(
+            &PathBuf::from(directory),
+            &PathBuf::from(parent_directory),
+            &expected_fingerprint,
+            session.map(|s| s.root()),
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+fn prepare_backup_recycle_bin(
+    state: State<'_, AppState>,
+) -> Result<recycle_bin::backups::Challenge, AppErrorPayload> {
+    let (confirmation, challenge) = read_session(&state, recycle_bin::backups::prepare)?;
+    *session_access::try_lock(&state.backup_trash_confirmation)? = Some(confirmation);
+    Ok(challenge)
+}
+
+#[tauri::command]
+async fn empty_backup_recycle_bin(
+    app: tauri::AppHandle,
+    confirmation_token: String,
+) -> Result<recycle_bin::backups::Purged, AppErrorPayload> {
+    let confirmation =
+        session_access::try_lock(&app.state::<AppState>().backup_trash_confirmation)?
+            .take()
+            .ok_or(CoreError::InvalidConfirmation)?;
+    background_session_operation(app, move |session| {
+        recycle_bin::backups::purge(session, confirmation, &confirmation_token)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn apply_application_batch(
+    app: tauri::AppHandle,
+    request: batch::Request,
+    expected_fingerprint: String,
+) -> Result<batch::Applied, AppErrorPayload> {
+    background_session_operation(app, move |session| {
+        batch::apply(session, &request, &expected_fingerprint)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn create_database_backup(
+    app: tauri::AppHandle,
+) -> Result<database_backup::BackupCreated, AppErrorPayload> {
+    background_session_operation(app, |session| database_backup::create(session)).await
+}
+
+#[tauri::command]
+async fn preview_database_backup(
+    app: tauri::AppHandle,
+    backup_id: String,
+    recycled: bool,
+) -> Result<database_backup::BackupPreview, AppErrorPayload> {
+    background_session_operation(app, move |session| {
+        database_backup::preview(session, &backup_id, recycled)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_database_backup(
+    app: tauri::AppHandle,
+    backup_id: String,
+    recycled: bool,
+    expected_sha256: String,
+    parent_directory: String,
+) -> Result<database_backup::DatabaseRestore, AppErrorPayload> {
+    background_session_operation(app, move |session| {
+        database_backup::restore(
+            session,
+            &backup_id,
+            recycled,
+            &expected_sha256,
+            &PathBuf::from(parent_directory),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -716,6 +1121,34 @@ fn available_browsers() -> Vec<BrowserChoice> {
     platform::available_browsers()
 }
 
+#[tauri::command]
+async fn open_help(app: tauri::AppHandle, topic: String) -> Result<(), AppErrorPayload> {
+    help::show(&app, &topic)
+}
+
+#[tauri::command]
+fn get_help_location(state: State<'_, help::HelpState>) -> Result<help::Location, AppErrorPayload> {
+    state.location().map_err(Into::into)
+}
+
+#[tauri::command]
+fn get_help_diagnostics(state: State<'_, AppState>) -> help::Diagnostics {
+    let access = match state.warehouse.try_lock() {
+        Ok(guard) => match guard.as_ref().map(|session| session.summary().access_mode) {
+            None => help::Access::Closed,
+            Some(WarehouseAccessMode::Write) => help::Access::Write,
+            Some(WarehouseAccessMode::ReadOnly) => help::Access::ReadOnly,
+        },
+        Err(_) => help::Access::Busy,
+    };
+    help::diagnostics(access)
+}
+
+#[tauri::command]
+fn open_help_logs(app: tauri::AppHandle) -> Result<bool, AppErrorPayload> {
+    help::open_logs(&app).map_err(Into::into)
+}
+
 fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let new_warehouse =
         MenuItem::with_id(app, "new-warehouse", "新建数据仓库…", true, None::<&str>)?;
@@ -726,8 +1159,21 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
     let quit = MenuItem::with_id(app, "quit", "退出 OfferTrack", true, None::<&str>)?;
     let overview = MenuItem::with_id(app, "overview", "概览", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
-    let help_usage = MenuItem::with_id(app, "help", "使用帮助", true, None::<&str>)?;
-    let about = MenuItem::with_id(app, "about", "关于 OfferTrack", true, None::<&str>)?;
+    let help_items = [
+        ("manual", "完整使用手册"),
+        ("quick-start", "快速开始"),
+        ("shortcuts", "快捷键"),
+        ("data", "数据与文件说明"),
+        ("faq", "常见问题"),
+        ("logs", "打开日志目录"),
+        ("diagnostics", "复制诊断信息…"),
+        ("about", "关于 OfferTrack"),
+    ]
+    .into_iter()
+    .map(|(topic, label)| {
+        MenuItem::with_id(app, format!("help:{topic}"), label, true, None::<&str>)
+    })
+    .collect::<tauri::Result<Vec<_>>>()?;
 
     let file = Submenu::with_items(
         app,
@@ -736,7 +1182,10 @@ fn build_menu<R: Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<Menu<R>> {
         &[&new_warehouse, &open_warehouse, &close_warehouse, &quit],
     )?;
     let view = Submenu::with_items(app, "视图", true, &[&overview, &settings])?;
-    let help = Submenu::with_items(app, "帮助", true, &[&help_usage, &about])?;
+    let help = Submenu::new(app, "帮助", true)?;
+    for item in &help_items {
+        help.append(item)?;
+    }
     Menu::with_items(app, &[&file, &view, &help])
 }
 
@@ -745,6 +1194,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .manage(help::HelpState::default())
         .setup(|app| {
             app.set_menu(build_menu(app.handle())?)?;
             Ok(())
@@ -757,64 +1207,146 @@ pub fn run() {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.close();
                 }
+            } else if let Some(topic) = id.strip_prefix("help:") {
+                let app = app.clone();
+                let topic = topic.to_owned();
+                // WebView2 window creation must not run synchronously inside
+                // a native event handler (runtime-documented deadlock).
+                tauri::async_runtime::spawn_blocking(move || {
+                    if topic == "logs" {
+                        match help::open_logs(&app) {
+                            Ok(true) => return,
+                            Ok(false) => {}
+                            Err(_) => {
+                                let _ = app.emit_to("main", "help-logs-failed", ());
+                            }
+                        }
+                    }
+                    let topic = if topic == "logs" {
+                        "diagnostics"
+                    } else {
+                        &topic
+                    };
+                    if help::show(&app, topic).is_err() {
+                        let _ = app.emit_to("main", "help-open-failed", ());
+                    }
+                });
             } else {
-                let _ = app.emit("menu-action", id);
+                let _ = app.emit_to("main", "menu-action", id);
             }
         })
-        .invoke_handler(tauri::generate_handler![
-            get_startup_state,
-            create_warehouse,
-            open_warehouse,
-            close_warehouse,
-            list_applications,
-            get_application,
-            create_application,
-            update_application,
-            change_application_stage,
-            save_workflow_stage,
-            delete_workflow_stage,
-            list_workflow_templates,
-            get_workflow_template,
-            update_workflow_template,
-            duplicate_workflow_template,
-            set_default_workflow_template,
-            reorder_application_workflow,
-            update_application_states,
-            update_template_states,
-            save_workflow_as_template,
-            save_interview_round,
-            delete_interview_round,
-            list_field_definitions,
-            save_field_definition,
-            list_application_views,
-            save_application_view,
-            delete_application_view,
-            update_view_metadata,
-            duplicate_application_view,
-            get_application_page_size,
-            set_application_page_size,
-            set_application_archived,
-            scan_application_documents,
-            refresh_file_index,
-            list_unlinked_folders,
-            claim_application_folder,
-            retry_folder_normalization,
-            preview_application_duplicate,
-            duplicate_application,
-            inspect_application_files,
-            get_recovery_diagnostics,
-            move_application_to_trash,
-            list_trash,
-            restore_application,
-            prepare_empty_recycle_bin,
-            empty_recycle_bin,
-            open_application_folder,
-            open_document,
-            available_browsers,
-            reveal_document,
-            get_document_path,
-            open_web_url
-        ])
+        .on_window_event(|window, event| {
+            if window.label() == "main" && matches!(event, tauri::WindowEvent::Destroyed) {
+                // Only after the main draft guard allowed actual destruction.
+                // An auxiliary window must not keep the process/write lock alive.
+                window.app_handle().exit(0);
+            }
+        })
+        .invoke_handler(|invoke| {
+            if !help::command_allowed(
+                invoke.message.webview_ref().label(),
+                invoke.message.command(),
+            ) {
+                invoke.resolver.reject(AppErrorPayload {
+                    code: "WINDOW_ACCESS_DENIED",
+                    message: "此窗口无权调用该应用接口。",
+                    retryable: false,
+                });
+                return true;
+            }
+            let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
+                open_help,
+                get_help_location,
+                get_help_diagnostics,
+                open_help_logs,
+                get_startup_state,
+                create_warehouse,
+                open_warehouse,
+                close_warehouse,
+                list_applications,
+                get_application,
+                create_application,
+                update_application,
+                change_application_stage,
+                save_workflow_stage,
+                delete_workflow_stage,
+                list_workflow_templates,
+                get_workflow_template,
+                update_workflow_template,
+                duplicate_workflow_template,
+                set_default_workflow_template,
+                reorder_application_workflow,
+                update_application_states,
+                update_template_states,
+                save_workflow_as_template,
+                save_interview_round,
+                delete_interview_round,
+                list_field_definitions,
+                save_field_definition,
+                list_application_views,
+                save_application_view,
+                delete_application_view,
+                update_view_metadata,
+                duplicate_application_view,
+                get_application_page_size,
+                set_application_page_size,
+                set_application_archived,
+                scan_application_documents,
+                refresh_file_index,
+                list_unlinked_folders,
+                claim_application_folder,
+                retry_folder_normalization,
+                preview_application_duplicate,
+                duplicate_application,
+                inspect_application_files,
+                get_recovery_diagnostics,
+                move_application_to_trash,
+                list_trash,
+                restore_application,
+                prepare_empty_recycle_bin,
+                empty_recycle_bin,
+                open_application_folder,
+                open_document,
+                available_browsers,
+                list_database_backups,
+                create_full_backup,
+                get_export_catalog,
+                export_applications,
+                create_agent_snapshot,
+                check_agent_snapshot,
+                get_agent_connection,
+                get_agent_permission,
+                set_agent_permission,
+                list_agent_audit,
+                get_agent_audit,
+                preview_full_backup,
+                restore_full_backup,
+                migrate_warehouse,
+                create_database_backup,
+                preview_application_batch,
+                preview_external_database_backup,
+                get_overview,
+                list_recruitment_events,
+                save_recruitment_event,
+                complete_recruitment_event,
+                list_tasks,
+                save_task,
+                complete_task,
+                list_reminder_rules,
+                save_reminder_rules,
+                respond_to_reminder,
+                restore_external_database_backup,
+                prepare_backup_recycle_bin,
+                empty_backup_recycle_bin,
+                apply_application_batch,
+                preview_database_backup,
+                restore_database_backup,
+                reveal_document,
+                get_document_path,
+                open_web_url
+            ];
+            handler(invoke)
+        })
         .run(tauri::generate_context!())
         .expect("OfferTrack failed to start");
 }

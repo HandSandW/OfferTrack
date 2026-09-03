@@ -13,6 +13,15 @@ Thumbs.db
 *.sqlite-shm
 *.sqlite-wal
 OfferTrack-data/
+*.offertrack-backup
+*.offertrack-db-backup
+OfferTrack-restored-*/
+.offertrack-restoring-*/
+.offertrack-backup-*.pending
+OfferTrack-export-*/
+.offertrack-export-*/
+agent-access/
+.offertrack-agent-instructions-*.pending
 
 # Keep evolving project documentation local until the public documentation is stable.
 /*.md

@@ -30,6 +30,10 @@ import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
 import { Modal } from "../../shared/Modal";
 import { ViewControls } from "../views/ViewControls";
 import { UrlLink as LinkValue } from "../../shared/UrlLink";
+import { BatchDialog } from "../batch/BatchDialog";
+import { ExportDialog } from "../export/ExportDialog";
+import type { BatchTarget } from "../batch/contracts";
+import type { Drilldown } from "../productivity/contracts";
 
 // Shared file/URL menu preserves ordinary-click row selection.
 
@@ -55,7 +59,7 @@ function Cell({
       <span
         className="progress-cell"
         style={{
-          background: `linear-gradient(90deg, ${record.currentStageState === "failed" ? "#dc2626" : record.currentStageColor}33 ${progress}%, #eef1f5 ${progress}%)`,
+          background: `linear-gradient(90deg, ${record.currentStageState === "failed" ? "#dc2626" : record.currentStageColor}33 ${progress}%, var(--surface-subtle) ${progress}%)`,
         }}
       >
         {record.currentStageState === "failed" ? "已挂 · " : ""}
@@ -87,12 +91,16 @@ function Cell({
 }
 
 interface ApplicationPageProps {
+  drilldown?: Drilldown | undefined;
+  initialCreateOpen?: boolean | undefined;
   scope: Extract<ApplicationScope, "active" | "archived">;
   writable: boolean;
   onError: (error: unknown) => void;
 }
 
 export function ApplicationPage({
+  drilldown,
+  initialCreateOpen = false,
   scope,
   writable,
   onError,
@@ -112,13 +120,21 @@ export function ApplicationPage({
   const [pageSize, setPageSize] = useState(50);
   const [page, setPage] = useState(1);
   const [showColumns, setShowColumns] = useState(false);
-  const [showCreate, setShowCreate] = useState(false);
+  const [showCreate, setShowCreate] = useState(initialCreateOpen);
+  const [sourceScope, setSourceScope] = useState(drilldown);
   const [createForm, setCreateForm] = useState(initialCreate);
   const [busy, setBusy] = useState(false);
   const [activeViewId, setActiveViewId] = useState("");
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState("");
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [checked, setChecked] = useState<BatchTarget[]>([]);
+  const [batchTargets, setBatchTargets] = useState<BatchTarget[] | null>(null);
+  const [exportSelection, setExportSelection] = useState<{
+    filtered: BatchTarget[];
+    selected: BatchTarget[];
+    columns: ColumnSetting[];
+  } | null>(null);
   const selectedRef = useRef<string | null>(null);
   const selectionRequest = useRef(0);
   useDraftState(
@@ -156,7 +172,7 @@ export function ApplicationPage({
         setColumns(
           columnsWithFields(view?.layout.columns ?? defaultColumns, nextFields),
         );
-        if (view) {
+        if (view && !drilldown) {
           setActiveViewId(view.id);
           setSort(view.sort);
           setFilter(view.filter);
@@ -177,7 +193,51 @@ export function ApplicationPage({
     return () => {
       active = false;
     };
-  }, [onError, scope, loadAttempt]);
+  }, [onError, scope, loadAttempt, drilldown]);
+
+  useEffect(() => {
+    if (
+      loading ||
+      loadError ||
+      drilldown?.ids.length !== 1 ||
+      selectedRef.current
+    )
+      return;
+    let active = true;
+    const request = ++selectionRequest.current;
+    setBusy(true);
+    void desktopApi
+      .getApplication(drilldown.ids[0]!)
+      .then((next) => {
+        if (active && request === selectionRequest.current) {
+          if (
+            next.deletedAtUtc ||
+            (scope === "archived" ? !next.archivedAtUtc : next.archivedAtUtc)
+          ) {
+            onError(
+              new OfferTrackError({
+                code: "APPLICATION_SCOPE_CHANGED",
+                message: "该投递已不在当前分区，请刷新概览后重试。",
+                retryable: true,
+              }),
+            );
+            return;
+          }
+          selectedRef.current = next.id;
+          setSelectedId(next.id);
+          setDetail(next);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) onError(error);
+      })
+      .finally(() => {
+        if (active && request === selectionRequest.current) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [drilldown, loading, loadError, onError, scope]);
 
   useEffect(() => {
     let timer = 0;
@@ -249,8 +309,15 @@ export function ApplicationPage({
     ),
   };
   const processed = useMemo(
-    () => filterAndSort(records, filter, sort),
-    [records, filter, sort],
+    () =>
+      filterAndSort(
+        sourceScope
+          ? records.filter((r) => sourceScope.ids.includes(r.id))
+          : records,
+        filter,
+        sort,
+      ),
+    [records, filter, sort, sourceScope],
   );
   const pageCount = Math.max(1, Math.ceil(processed.length / pageSize));
   const currentPage = Math.min(page, pageCount);
@@ -327,9 +394,33 @@ export function ApplicationPage({
     }
   };
 
+  const chooseBatch = (next: ApplicationListItem[]) => {
+    if (next.length > 200) {
+      onError(new Error("每批最多 200 条，请缩小选择范围。"));
+      return;
+    }
+    setChecked(next.map(({ id, revision }) => ({ id, revision })));
+  };
+  const reloadAfterBatch = async () => {
+    setChecked([]);
+    const next = await desktopApi.listApplications(scope);
+    setRecords(next);
+  };
+
   return (
     <section className="applications-workspace">
       <div className="table-pane">
+        {sourceScope && (
+          <div className="notice info">
+            <span>
+              来自概览：{sourceScope.label} · {sourceScope.ids.length}{" "}
+              条快照范围；不写入保存视图。当前结果可能因归档或删除减少。
+            </span>
+            <button onClick={() => setSourceScope(undefined)}>
+              清除概览范围
+            </button>
+          </div>
+        )}
         {loading && <p role="status">正在读取投递、字段和视图…</p>}
         {loadError && (
           <div role="alert">
@@ -424,6 +515,25 @@ export function ApplicationPage({
             列设置
           </button>
           <button
+            type="button"
+            disabled={loading || !!loadError || busy}
+            onClick={() =>
+              void (async () => {
+                if (!(await confirmLeave())) return;
+                setExportSelection({
+                  filtered: processed.map((r) => ({
+                    id: r.id,
+                    revision: r.revision,
+                  })),
+                  selected: [...checked],
+                  columns: [...columns],
+                });
+              })()
+            }
+          >
+            导出
+          </button>
+          <button
             onClick={() => {
               setColumns(columnsWithFields(defaultColumns, fields));
               setSort([{ key: "createdAtUtc", direction: "desc" }]);
@@ -452,6 +562,70 @@ export function ApplicationPage({
               新建投递
             </button>
           )}
+        </div>
+
+        <div className="record-toolbar" aria-label="批量选择工具">
+          <button
+            type="button"
+            disabled={loading || !!loadError || busy}
+            onClick={() => chooseBatch(pageRecords)}
+          >
+            选择本页
+          </button>
+          {detail && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() =>
+                chooseBatch(
+                  records.filter((r) => r.companyName === detail.companyName),
+                )
+              }
+            >
+              选择当前列表中同公司投递
+            </button>
+          )}
+          <span>已选 {checked.length} 条（跨页保留）</span>
+          {!!checked.length && (
+            <>
+              <button type="button" onClick={() => setChecked([])}>
+                清除选择
+              </button>
+              <button
+                type="button"
+                disabled={!writable || busy || loading || !!loadError}
+                onClick={() =>
+                  void (async () => {
+                    if (!(await confirmLeave())) return;
+                    selectionRequest.current += 1;
+                    selectedRef.current = null;
+                    setSelectedId(null);
+                    setDetail(null);
+                    setBatchTargets([...checked]);
+                  })()
+                }
+              >
+                批量修改
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            disabled={busy || loading}
+            onClick={() =>
+              void (async () => {
+                try {
+                  const next = await desktopApi.listApplications(scope);
+                  setRecords(next);
+                  setChecked([]);
+                } catch (error) {
+                  onError(error);
+                }
+              })()
+            }
+          >
+            刷新投递并清除选择
+          </button>
         </div>
 
         {showColumns && (
@@ -569,6 +743,7 @@ export function ApplicationPage({
                           : ""}
                       </th>
                     ))}
+                    <th>批量选择</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -599,6 +774,31 @@ export function ApplicationPage({
                           />
                         </td>
                       ))}
+                      <td onClick={(event) => event.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`选择投递 ${record.companyName} ${record.positionName}`}
+                          checked={checked.some((r) => r.id === record.id)}
+                          disabled={busy}
+                          onChange={(event) => {
+                            if (!event.target.checked)
+                              setChecked(
+                                checked.filter((r) => r.id !== record.id),
+                              );
+                            else if (checked.length < 200)
+                              setChecked([
+                                ...checked,
+                                { id: record.id, revision: record.revision },
+                              ]);
+                            else
+                              onError(
+                                new Error(
+                                  "每批最多 200 条，请先清除部分选择。",
+                                ),
+                              );
+                          }}
+                        />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -669,6 +869,21 @@ export function ApplicationPage({
           onError={onError}
           scope={scope}
           writable={writable && !busy}
+        />
+      )}
+
+      {batchTargets && (
+        <BatchDialog
+          targets={batchTargets}
+          onClose={() => setBatchTargets(null)}
+          onApplied={reloadAfterBatch}
+        />
+      )}
+      {exportSelection && (
+        <ExportDialog
+          partition={scope}
+          {...exportSelection}
+          onClose={() => setExportSelection(null)}
         />
       )}
 

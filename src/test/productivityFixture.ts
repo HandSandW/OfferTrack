@@ -1,0 +1,65 @@
+import type {
+  Overview,
+  Task,
+  ReminderRule,
+} from "../features/productivity/contracts";
+export const taskFixture = (overrides: Partial<Task> = {}): Task => ({
+  id: "task-one",
+  revision: 1,
+  applicationId: null,
+  applicationLabel: null,
+  applicationArchived: false,
+  title: "准备作品集",
+  notes: "虚构待办备注",
+  priority: "high",
+  dueAtUtc: null,
+  remindAtUtc: null,
+  completedAtUtc: null,
+  createdAtUtc: "2026-09-03T00:00:00Z",
+  updatedAtUtc: "2026-09-03T00:00:00Z",
+  ...overrides,
+});
+export const overviewFixture = (
+  overrides: Partial<Overview> = {},
+): Overview => ({
+  generatedAtUtc: "2026-09-03T04:00:00Z",
+  records: [],
+  metrics: [{ label: "活跃投递", ids: [] }],
+  stages: [],
+  industries: [],
+  locations: [],
+  companyTypes: [],
+  funnel: [],
+  trend: [],
+  tasks: [],
+  interviews: [],
+  reminders: [],
+  events: [],
+  schedule: [],
+  dueMetrics: [],
+  ...overrides,
+});
+export const rulesFixture = (): ReminderRule[] =>
+  [
+    "missing_resume",
+    "preparing_idle",
+    "stage_idle",
+    "result_idle",
+    "due_soon",
+    "due_urgent",
+    "overdue",
+  ].map((key, i) => ({
+    key,
+    label: [
+      "创建后尚无简历",
+      "准备投递且没有更新",
+      "进行中没有状态变化",
+      "待结果长期未变化",
+      "即将到期",
+      "临近截止或面试",
+      "已经逾期",
+    ][i]!,
+    enabled: true,
+    value: [3, 7, 7, 10, 3, 24, 0][i]!,
+    revision: 1,
+  }));

@@ -3,6 +3,20 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum CoreError {
+    #[error("agent writes disabled")]
+    AgentWriteDisabled,
+    #[error("agent request id reused with different content")]
+    AgentRequestConflict,
+    #[error("agent warehouse identity changed")]
+    AgentWarehouseChanged,
+    #[error("unsupported agent contract version")]
+    AgentVersion,
+    #[error("agent data exceeds supported limits")]
+    AgentLimit,
+    #[error("export exceeds supported limits")]
+    ExportLimit,
+    #[error("spreadsheet encoding failed")]
+    ExportEncoding,
     #[error("warehouse is already locked")]
     WarehouseLocked,
     #[error("warehouse directory is not empty")]
@@ -33,6 +47,10 @@ pub enum CoreError {
     Validation,
     #[error("record has changed")]
     RevisionConflict,
+    #[error("interview round is referenced by an event")]
+    EventRoundInUse,
+    #[error("batch workflow definitions conflict")]
+    BatchConflict,
     #[error("file operation failed")]
     FileOperation,
     #[error("file or directory is missing")]
@@ -51,6 +69,10 @@ pub enum CoreError {
     UnsafePath,
     #[error("confirmation is invalid")]
     InvalidConfirmation,
+    #[error("database backup is invalid or incompatible")]
+    BackupInvalid,
+    #[error("database-only restore cannot replay pending file operations")]
+    BackupPendingOperations,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -64,6 +86,61 @@ pub struct AppErrorPayload {
 impl From<CoreError> for AppErrorPayload {
     fn from(error: CoreError) -> Self {
         match error {
+            CoreError::AgentWriteDisabled => Self {
+                code: "AGENT_WRITE_DISABLED",
+                message: "Agent 写入未开启。只能由用户在当前仓库设置中明确开启，Agent 不能自行授权。",
+                retryable: false,
+            },
+            CoreError::AgentRequestConflict => Self {
+                code: "AGENT_REQUEST_CONFLICT",
+                message: "请求 ID 已被其他内容使用。请核对原请求及审计；仅相同请求可以安全重试。",
+                retryable: false,
+            },
+            CoreError::AgentWarehouseChanged => Self {
+                code: "AGENT_WAREHOUSE_CHANGED",
+                message: "配置路径中的仓库身份已改变，已停止查询。请确认目标仓库后重新建立 Agent 连接。",
+                retryable: false,
+            },
+            CoreError::AgentVersion => Self {
+                code: "AGENT_VERSION_UNSUPPORTED",
+                message: "不支持该 Agent 请求版本。请使用 --help 核对当前契约版本；未修改仓库。",
+                retryable: false,
+            },
+            CoreError::AgentLimit => Self {
+                code: "AGENT_LIMIT",
+                message: "Agent 输入/数据超过限制（请求 64 KiB、每类 10000 项、完整 JSON 64 MiB）。未截断输出或修改原数据。",
+                retryable: false,
+            },
+            CoreError::ExportLimit => Self {
+                code: "EXPORT_LIMIT",
+                message: "导出超过限制：最多 10000 条、256 列、32 MiB 原文；XLSX 单格最多 32767 个字符。请缩小范围、减少字段，或将超长文本改用 CSV 导出。未覆盖原数据。",
+                retryable: false,
+            },
+            CoreError::ExportEncoding => Self {
+                code: "EXPORT_ENCODING",
+                message: "无法生成表格，请检查导出字段后重试。原数据未修改；失败暂存保留。",
+                retryable: true,
+            },
+            CoreError::EventRoundInUse => Self {
+                code: "EVENT_ROUND_IN_USE",
+                message: "该轮次已被招聘事件关联，请先在待办与日程中解除事件关联，再删除轮次。",
+                retryable: true,
+            },
+            CoreError::BatchConflict => Self {
+                code: "BATCH_WORKFLOW_CONFLICT",
+                message: "选中投递的流程不兼容：阶段缺失、同名不同定义、分类冲突或超过 100 项。整批未保存，请分别调整记录或缩小范围后重新预览。",
+                retryable: false,
+            },
+            CoreError::BackupInvalid => Self {
+                code: "BACKUP_INVALID",
+                message: "备份缺失、校验失败或版本不兼容。未覆盖当前仓库；失败暂存内容保留，请检查后重试或选择其他备份。",
+                retryable: false,
+            },
+            CoreError::BackupPendingOperations => Self {
+                code: "BACKUP_PENDING_OPERATIONS",
+                message: "存在未完成的文件操作，暂不能完整备份、迁移或从该快照恢复。请保留备份和原文件，先处理原仓库的文件恢复问题。",
+                retryable: false,
+            },
             CoreError::WarehouseLocked => Self {
                 code: "WAREHOUSE_LOCKED",
                 message: "该数据仓库正被另一个 OfferTrack 实例写入。你可以关闭另一实例，或改为只读打开。",

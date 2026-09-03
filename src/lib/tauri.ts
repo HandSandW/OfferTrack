@@ -1,5 +1,42 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  AgentConnection,
+  AgentSnapshot,
+  AgentPermission,
+  AgentAuditItem,
+  SnapshotReport,
+} from "../features/agent/contracts";
+import type {
+  ExportCatalog,
+  ExportCreated,
+  ExportRequest,
+} from "../features/export/contracts";
+import type {
+  Overview,
+  Task,
+  SaveTask,
+  ReminderRule,
+  RecruitmentEvent,
+  SaveEvent,
+} from "../features/productivity/contracts";
+import type {
+  BatchRequest,
+  BatchPreview,
+  BatchApplied,
+} from "../features/batch/contracts";
+import type {
+  BackupCatalog,
+  BackupCreated,
+  BackupPreview,
+  DatabaseRestore,
+  FullBackupPreview,
+  FullBackupCreated,
+  FullRestore,
+  ExternalDatabasePreview,
+  BackupTrashChallenge,
+  BackupTrashResult,
+} from "../features/backup/contracts";
+import type {
   AppErrorPayload,
   ApplicationDetail,
   ApplicationListItem,
@@ -65,13 +102,158 @@ async function call<T>(
   args?: Record<string, unknown>,
 ): Promise<T> {
   try {
-    return await invoke<T>(command, args);
+    const result = await invoke<T>(command, args);
+    if (
+      [
+        "save_task",
+        "complete_task",
+        "save_reminder_rules",
+        "respond_to_reminder",
+        "save_recruitment_event",
+        "complete_recruitment_event",
+      ].includes(command)
+    ) {
+      window.dispatchEvent(new Event("offertrack-data-changed"));
+    }
+    return result;
   } catch (error: unknown) {
     throw normalizeError(error);
+  } finally {
+    // Only changes to the Agent projection (and manual publication), not reads or auto checks.
+    // File-operation failures may have committed a recoverable partial operation: check those too.
+    if (SNAPSHOT_CHANGES.has(command)) {
+      window.dispatchEvent(new Event("offertrack-snapshot-dirty"));
+    }
   }
 }
 
+const SNAPSHOT_CHANGES = new Set([
+  "create_application",
+  "update_application",
+  "change_application_stage",
+  "set_application_archived",
+  "move_application_to_trash",
+  "restore_application",
+  "duplicate_application",
+  "claim_application_folder",
+  "apply_application_batch",
+  "save_workflow_stage",
+  "delete_workflow_stage",
+  "reorder_application_workflow",
+  "save_interview_round",
+  "delete_interview_round",
+  "update_application_states",
+  "save_field_definition",
+  "save_task",
+  "complete_task",
+  "save_recruitment_event",
+  "complete_recruitment_event",
+  "refresh_file_index",
+  "scan_application_documents",
+  "retry_folder_normalization",
+  "create_agent_snapshot",
+]);
+
 export const desktopApi = {
+  checkAgentSnapshot: (warehouseId: string, warehousePath: string) =>
+    call<SnapshotReport>("check_agent_snapshot", {
+      warehouseId,
+      warehousePath,
+    }),
+  getAgentConnection: () => call<AgentConnection>("get_agent_connection"),
+  createAgentSnapshot: () => call<AgentSnapshot>("create_agent_snapshot"),
+  getAgentPermission: () => call<AgentPermission>("get_agent_permission"),
+  setAgentPermission: (enabled: boolean, revision: number) =>
+    call<AgentPermission>("set_agent_permission", { enabled, revision }),
+  listAgentAudit: () => call<AgentAuditItem[]>("list_agent_audit"),
+  getAgentAudit: (id: string) => call<unknown>("get_agent_audit", { id }),
+  getExportCatalog: () => call<ExportCatalog>("get_export_catalog"),
+  exportApplications: (parentDirectory: string, request: ExportRequest) =>
+    call<ExportCreated>("export_applications", { parentDirectory, request }),
+  listRecruitmentEvents: () =>
+    call<RecruitmentEvent[]>("list_recruitment_events"),
+  saveRecruitmentEvent: (request: SaveEvent) =>
+    call<RecruitmentEvent>("save_recruitment_event", { request }),
+  completeRecruitmentEvent: (
+    id: string,
+    revision: number,
+    completed: boolean,
+  ) =>
+    call<RecruitmentEvent>("complete_recruitment_event", {
+      id,
+      revision,
+      completed,
+    }),
+  getOverview: () => call<Overview>("get_overview"),
+  listTasks: () => call<Task[]>("list_tasks"),
+  saveTask: (request: SaveTask) => call<Task>("save_task", { request }),
+  completeTask: (id: string, revision: number, completed: boolean) =>
+    call<Task>("complete_task", { id, revision, completed }),
+  listReminderRules: () => call<ReminderRule[]>("list_reminder_rules"),
+  saveReminderRules: (rules: ReminderRule[]) =>
+    call<ReminderRule[]>("save_reminder_rules", { rules }),
+  respondToReminder: (key: string, fingerprint: string, snooze: boolean) =>
+    call<void>("respond_to_reminder", { key, fingerprint, snooze }),
+  previewExternalDatabaseBackup: (directory: string) =>
+    call<ExternalDatabasePreview>("preview_external_database_backup", {
+      directory,
+    }),
+  restoreExternalDatabaseBackup: (
+    directory: string,
+    parentDirectory: string,
+    expectedFingerprint: string,
+  ) =>
+    call<DatabaseRestore>("restore_external_database_backup", {
+      directory,
+      parentDirectory,
+      expectedFingerprint,
+    }),
+  prepareBackupRecycleBin: () =>
+    call<BackupTrashChallenge>("prepare_backup_recycle_bin"),
+  emptyBackupRecycleBin: (confirmationToken: string) =>
+    call<BackupTrashResult>("empty_backup_recycle_bin", { confirmationToken }),
+  previewApplicationBatch: (request: BatchRequest) =>
+    call<BatchPreview>("preview_application_batch", { request }),
+  applyApplicationBatch: (request: BatchRequest, expectedFingerprint: string) =>
+    call<BatchApplied>("apply_application_batch", {
+      request,
+      expectedFingerprint,
+    }),
+  createFullBackup: (parentDirectory: string, includeRecycleBin: boolean) =>
+    call<FullBackupCreated>("create_full_backup", {
+      parentDirectory,
+      includeRecycleBin,
+    }),
+  previewFullBackup: (archivePath: string) =>
+    call<FullBackupPreview>("preview_full_backup", { archivePath }),
+  restoreFullBackup: (
+    archivePath: string,
+    parentDirectory: string,
+    expectedSha256: string,
+  ) =>
+    call<FullRestore>("restore_full_backup", {
+      archivePath,
+      parentDirectory,
+      expectedSha256,
+    }),
+  migrateWarehouse: (parentDirectory: string) =>
+    call<FullRestore>("migrate_warehouse", { parentDirectory }),
+  listDatabaseBackups: () => call<BackupCatalog>("list_database_backups"),
+  createDatabaseBackup: () => call<BackupCreated>("create_database_backup"),
+  previewDatabaseBackup: (backupId: string, recycled: boolean) =>
+    call<BackupPreview>("preview_database_backup", { backupId, recycled }),
+  restoreDatabaseBackup: (
+    backupId: string,
+    recycled: boolean,
+    expectedSha256: string,
+    parentDirectory: string,
+  ) =>
+    call<DatabaseRestore>("restore_database_backup", {
+      backupId,
+      recycled,
+      expectedSha256,
+      parentDirectory,
+    }),
   inspectApplicationFiles: (applicationId: string) =>
     call<PathObservation>("inspect_application_files", { applicationId }),
   getRecoveryDiagnostics: () =>

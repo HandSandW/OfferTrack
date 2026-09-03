@@ -24,7 +24,7 @@ pub fn get_template(
     get_template_from_connection(session.connection(), id)
 }
 
-fn get_template_from_connection(
+pub(crate) fn get_template_from_connection(
     connection: &Connection,
     id: &str,
 ) -> Result<WorkflowTemplateDetail, CoreError> {

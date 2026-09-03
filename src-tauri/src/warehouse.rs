@@ -61,12 +61,14 @@ pub struct WarehouseSummary {
 }
 
 pub struct WarehouseSession {
+    pub(crate) last_backup_date: Option<String>,
     root: PathBuf,
     descriptor: WarehouseDescriptor,
     access_mode: WarehouseAccessMode,
     warnings: Vec<StorageWarning>,
-    _lock: Option<File>,
     _connection: Connection,
+    // The writer lock must outlive SQLite connection shutdown/checkpointing.
+    _lock: Option<File>,
 }
 
 impl WarehouseSession {
@@ -97,6 +99,25 @@ impl WarehouseSession {
 
     pub fn is_writable(&self) -> bool {
         self.access_mode == WarehouseAccessMode::Write
+    }
+
+    /// Only the guarded Agent reader calls this. No desktop open lifecycle:
+    /// absolutely no migration, recovery, normalization, scan or daily rotation.
+    pub(crate) fn acquire_agent_writer(&mut self) -> Result<(), CoreError> {
+        let lock = acquire_write_lock(&self.root)?;
+        let connection = Connection::open_with_flags(
+            self.root.join(DATABASE_FILE),
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+        migrations::validate_schema(&connection)?;
+        connection
+            .execute_batch("PRAGMA synchronous=FULL; PRAGMA trusted_schema=OFF;")
+            .map_err(|_| CoreError::DatabaseInvalid)?;
+        self._connection = connection;
+        self._lock = Some(lock);
+        self.access_mode = WarehouseAccessMode::Write;
+        Ok(())
     }
 }
 
@@ -176,6 +197,7 @@ pub fn open(path: &Path, access_mode: WarehouseAccessMode) -> Result<WarehouseSe
 
     match access_mode {
         WarehouseAccessMode::Write => {
+            crate::database_backup::before_upgrade(&connection, &root, descriptor.warehouse_id)?;
             migrations::migrate(&mut connection)?;
             if descriptor.capabilities.database_schema_version != CURRENT_SCHEMA_VERSION {
                 descriptor.capabilities.database_schema_version = CURRENT_SCHEMA_VERSION;
@@ -188,6 +210,7 @@ pub fn open(path: &Path, access_mode: WarehouseAccessMode) -> Result<WarehouseSe
     let mut session = build_session(root, descriptor, access_mode, lock, connection);
     crate::recycle_bin::recover_moves(&mut session)?;
     crate::copying::recover(&mut session)?;
+    crate::database_backup::ensure_daily(&mut session)?;
     Ok(session)
 }
 
@@ -200,6 +223,7 @@ fn build_session(
 ) -> WarehouseSession {
     let warnings = SystemStorageLocationInspector.inspect(&root);
     WarehouseSession {
+        last_backup_date: None,
         root,
         descriptor,
         access_mode,
@@ -207,6 +231,45 @@ fn build_session(
         _lock: lock,
         _connection: connection,
     }
+}
+
+/// Called only for a new, privately staged database-only restore directory.
+pub(crate) fn prepare_restored_layout(root: &Path) -> Result<(), CoreError> {
+    finish_restored_layout(root, Uuid::new_v4(), false)
+}
+
+pub(crate) fn finish_restored_layout(
+    root: &Path,
+    warehouse_id: Uuid,
+    allow_existing: bool,
+) -> Result<(), CoreError> {
+    for directory in ["recycle-bin", "backups"]
+        .iter()
+        .chain(REQUIRED_DIRECTORIES.iter())
+    {
+        let path = root.join(directory);
+        crate::filesystem::validate_no_reparse(root, &path)?;
+        if !(allow_existing && path.is_dir()) {
+            fs::create_dir(path).map_err(|_| CoreError::Storage)?;
+        }
+    }
+    let descriptor = WarehouseDescriptor {
+        format_version: WAREHOUSE_FORMAT_VERSION,
+        warehouse_id,
+        created_at_utc: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+        capabilities: WarehouseCapabilities {
+            database_schema_version: CURRENT_SCHEMA_VERSION,
+        },
+    };
+    let bytes = serde_json::to_vec_pretty(&descriptor).map_err(|_| CoreError::Storage)?;
+    use std::io::Write;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(root.join(DESCRIPTOR_FILE))
+        .map_err(|_| CoreError::Storage)?;
+    file.write_all(&bytes).map_err(|_| CoreError::Storage)?;
+    file.sync_all().map_err(|_| CoreError::Storage)
 }
 
 fn acquire_write_lock(root: &Path) -> Result<File, CoreError> {
