@@ -25,6 +25,8 @@ export function applicationFixture(
     folderNormalizationPending: false,
     currentStageId: "stage-preparing",
     currentStageName: "准备投递",
+    currentStageKey: "preparing",
+    currentStageTerminal: false,
     currentStageState: "pending",
     currentStateName: "尚未开始",
     currentStateKind: "pending",

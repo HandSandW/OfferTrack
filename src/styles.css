@@ -392,6 +392,14 @@ textarea:disabled {
   max-width: 150px;
 }
 
+.record-toolbar .preset-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
 .record-toolbar button {
   flex: none;
 }
@@ -1347,4 +1355,31 @@ textarea:disabled {
 }
 .export-modal label {
   font-size: 14px;
+}
+.application-grid {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.grid-instructions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 0.8rem;
+}
+.grid-feedback:empty {
+  display: none;
+}
+.grid-feedback {
+  margin: 4px 12px;
+  font-size: 0.85rem;
+}
+.application-table td:focus,
+.application-table th:focus-visible {
+  outline: 2px solid var(--accent, #2563eb);
+  outline-offset: -2px;
 }

@@ -74,4 +74,26 @@ describe("application table model", () => {
       ["c", 112],
     ]);
   });
+
+  it("filters and sorts ten thousand long-text rows within the UI baseline", () => {
+    const longText = "合成岗位介绍与备注。".repeat(40);
+    const records = Array.from({ length: 10_000 }, (_, index) =>
+      applicationFixture({
+        id: `performance-${index.toString().padStart(5, "0")}`,
+        companyName: index % 2 ? `目标公司 ${index}` : `其他公司 ${index}`,
+        positionDescription: longText,
+        notes: longText,
+        createdAtUtc: `2026-01-${String((index % 28) + 1).padStart(2, "0")}T12:00:00Z`,
+      }),
+    );
+    const started = performance.now();
+    const result = filterAndSort(
+      records,
+      { ...initialFilter, search: "目标公司" },
+      [{ key: "createdAtUtc", direction: "desc" }],
+    );
+    const elapsed = performance.now() - started;
+    expect(result).toHaveLength(5_000);
+    expect(elapsed).toBeLessThan(2_000);
+  });
 });

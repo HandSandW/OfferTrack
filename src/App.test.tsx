@@ -507,6 +507,8 @@ describe("OfferTrack app shell", () => {
   it.each([
     "WAREHOUSE_LOCKED",
     "COPY_RECOVERY_REQUIRED",
+    "DOCUMENT_RENAME_RECOVERY",
+    "DOCUMENT_TRASH_RECOVERY",
     "FILE_BUSY",
     "FILE_TYPE_MISMATCH",
     "UNSAFE_PATH_REJECTED",

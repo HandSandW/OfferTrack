@@ -477,6 +477,7 @@ fn remove_tree_with_identity(
 enum TrashArea {
     Records,
     Backups,
+    Documents,
 }
 
 fn remove_tree_in_area(
@@ -488,6 +489,7 @@ fn remove_tree_in_area(
     let recycle_root = warehouse_root.join("recycle-bin").join(match area {
         TrashArea::Records => "records",
         TrashArea::Backups => "backups",
+        TrashArea::Documents => "documents",
     });
     // Do not canonicalize a redirected recycle-bin and accidentally grant its
     // destination deletion authority. Freeze Windows ancestors while deleting.
@@ -508,6 +510,19 @@ fn remove_tree_in_area(
         return Err(CoreError::UnsafePath);
     }
     remove_entry_with_identity(path, expected_identity)
+}
+
+pub(crate) fn remove_document_file(
+    warehouse_root: &Path,
+    path: &Path,
+    expected_identity: &str,
+) -> Result<(), CoreError> {
+    remove_tree_in_area(
+        warehouse_root,
+        path,
+        TrashArea::Documents,
+        Some(expected_identity),
+    )
 }
 
 pub(crate) fn remove_staging_directory(
@@ -571,10 +586,19 @@ fn remove_entry_with_identity(
     // The handle excludes sharing for write/delete, preventing replacement or
     // reparse-point edits after validation. Keep it alive through recursion.
     let handle = lock_entry(path, true)?;
-    if let Some(expected) = expected_identity
-        && crate::copying::directory_identity_from_handle(&handle)? != expected
-    {
-        return Err(CoreError::CopyRecovery);
+    if let Some(expected) = expected_identity {
+        let actual = if handle
+            .metadata()
+            .map_err(|_| CoreError::FileOperation)?
+            .is_dir()
+        {
+            crate::copying::directory_identity_from_handle(&handle)?
+        } else {
+            crate::document_files::identity_from_handle(&handle)?
+        };
+        if actual != expected {
+            return Err(CoreError::CopyRecovery);
+        }
     }
     if handle
         .metadata()
@@ -635,6 +659,27 @@ mod tests {
             Err(CoreError::UnsafePath)
         ));
         assert!(outside.exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn document_cleanup_only_deletes_a_verified_direct_file_in_its_fixed_area() {
+        let warehouse = tempdir().expect("warehouse");
+        let base = warehouse.path().join("recycle-bin/documents");
+        fs::create_dir_all(&base).unwrap();
+        let id = Uuid::new_v4().to_string();
+        let target = base.join(&id);
+        let other = warehouse.path().join("outside.txt");
+        fs::write(&target, b"trash").unwrap();
+        fs::write(&other, b"safe").unwrap();
+        let identity = crate::document_files::file_identity(&target).unwrap();
+        remove_document_file(warehouse.path(), &target, &identity).unwrap();
+        assert!(!target.exists());
+        assert_eq!(fs::read(&other).unwrap(), b"safe");
+        assert!(matches!(
+            remove_document_file(warehouse.path(), &other, &identity),
+            Err(CoreError::UnsafePath)
+        ));
     }
 
     #[test]

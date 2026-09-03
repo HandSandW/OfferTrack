@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { DocumentEntry } from "../../contracts";
+import type { ApplicationDirectories, DocumentEntry } from "../../contracts";
 import { desktopApi } from "../../lib/tauri";
 import { OpenMenu } from "../../shared/OpenMenu";
 import { documentTree, type DocumentBranch } from "./treeModel";
@@ -10,12 +10,18 @@ export function DocumentTree({
   disabled,
   run,
   onCopied,
+  directories = [],
+  onRename,
+  onTrash,
 }: {
   documents: DocumentEntry[];
   applicationId: string;
   disabled: boolean;
   run: (operation: () => Promise<void>) => Promise<void>;
   onCopied: () => void;
+  directories?: ApplicationDirectories["directories"];
+  onRename?: ((document: DocumentEntry) => void) | undefined;
+  onTrash?: ((document: DocumentEntry) => void) | undefined;
 }) {
   const [menu, setMenu] = useState<{
     x: number;
@@ -47,7 +53,10 @@ export function DocumentTree({
         .map((folder) => (
           <li key={folder.path}>
             <details open>
-              <summary>{folder.name}</summary>
+              <summary>
+                {folder.name}
+                {folder.empty && <span className="muted">（空目录）</span>}
+              </summary>
               {renderBranch(folder)}
             </details>
           </li>
@@ -122,7 +131,7 @@ export function DocumentTree({
   );
   return (
     <div className="document-list document-tree">
-      {renderBranch(documentTree(documents))}
+      {renderBranch(documentTree(documents, directories))}
       {menu && !disabled && (
         <OpenMenu
           x={menu.x}
@@ -136,6 +145,12 @@ export function DocumentTree({
             },
             { label: "打开所在文件夹", run: () => reveal(menu.file) },
             { label: "复制文件路径", run: () => copy(menu.file) },
+            ...(onRename && !menu.file.missing
+              ? [{ label: "重命名…", run: () => onRename(menu.file) }]
+              : []),
+            ...(onTrash && !menu.file.missing
+              ? [{ label: "移入附件回收站…", run: () => onTrash(menu.file) }]
+              : []),
           ]}
           openInBrowser={
             /\.pdf$/i.test(menu.file.relativePath)

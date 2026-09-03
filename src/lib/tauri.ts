@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
+  CellApplied,
+  CellRequest,
+} from "../features/applications/cellModel";
+import type {
   AgentConnection,
   AgentSnapshot,
   AgentPermission,
@@ -39,6 +43,13 @@ import type {
 import type {
   AppErrorPayload,
   ApplicationDetail,
+  ApplicationDirectories,
+  RenameDocumentRequest,
+  TrashDocumentRequest,
+  DocumentTrashEntry,
+  RestoredDocument,
+  DocumentTrashChallenge,
+  DocumentTrashPurged,
   ApplicationListItem,
   ApplicationScope,
   CreateApplicationRequest,
@@ -105,6 +116,10 @@ async function call<T>(
     const result = await invoke<T>(command, args);
     if (
       [
+        "edit_application_cell",
+        "rename_document",
+        "trash_document",
+        "restore_document",
         "save_task",
         "complete_task",
         "save_reminder_rules",
@@ -130,6 +145,7 @@ async function call<T>(
 const SNAPSHOT_CHANGES = new Set([
   "create_application",
   "update_application",
+  "edit_application_cell",
   "change_application_stage",
   "set_application_archived",
   "move_application_to_trash",
@@ -150,6 +166,9 @@ const SNAPSHOT_CHANGES = new Set([
   "complete_recruitment_event",
   "refresh_file_index",
   "scan_application_documents",
+  "rename_document",
+  "trash_document",
+  "restore_document",
   "retry_folder_normalization",
   "create_agent_snapshot",
 ]);
@@ -272,6 +291,8 @@ export const desktopApi = {
     call<ApplicationDetail>("create_application", { request }),
   updateApplication: (request: UpdateApplicationRequest) =>
     call<ApplicationDetail>("update_application", { request }),
+  editApplicationCell: (request: CellRequest) =>
+    call<CellApplied>("edit_application_cell", { request }),
   changeApplicationStage: (request: {
     applicationId: string;
     stageId: string;
@@ -387,6 +408,21 @@ export const desktopApi = {
       applicationId,
     }),
   refreshFileIndex: () => call<void>("refresh_file_index"),
+  listApplicationDirectories: (applicationId: string) =>
+    call<ApplicationDirectories>("list_application_directories", {
+      applicationId,
+    }),
+  renameDocument: (request: RenameDocumentRequest) =>
+    call<ApplicationDetail>("rename_document", { request }),
+  trashDocument: (request: TrashDocumentRequest) =>
+    call<ApplicationDetail>("trash_document", { request }),
+  listDocumentTrash: () => call<DocumentTrashEntry[]>("list_document_trash"),
+  restoreDocument: (id: string) =>
+    call<RestoredDocument>("restore_document", { id }),
+  prepareDocumentTrashCleanup: () =>
+    call<DocumentTrashChallenge>("prepare_document_trash_cleanup"),
+  emptyDocumentTrash: (confirmationToken: string) =>
+    call<DocumentTrashPurged>("empty_document_trash", { confirmationToken }),
   listUnlinkedFolders: (includeHidden = false) =>
     call<UnlinkedFolder[]>("list_unlinked_folders", { includeHidden }),
   claimApplicationFolder: (

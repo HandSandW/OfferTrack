@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { RecoveryDiagnostics } from "../../contracts";
+import type { PathState, RecoveryDiagnostics } from "../../contracts";
 import { desktopApi } from "../../lib/tauri";
 import { pathStateText } from "./fileStatus";
 
@@ -8,6 +8,19 @@ const labels: Record<string, string> = {
   normalize: "目录规范化",
   trash: "移入回收站",
   restore: "从回收站恢复",
+  documentRename: "附件重命名",
+  documentTrash: "附件移入回收站",
+  documentRestore: "附件从回收站恢复",
+  documentPurge: "附件永久清理对账",
+};
+const fileStateText: Record<PathState, string> = {
+  available: "文件存在（尚未核验身份或占用）",
+  missing: "文件不存在，不会自动重建",
+  wrongType: "当前位置不是普通文件，不会覆盖",
+  busy: "文件被占用，请关闭相关程序后重试",
+  accessDenied: "没有访问权限，不能判断文件是否丢失",
+  unsafe: "路径不安全或包含重解析点，已拒绝访问",
+  unavailable: "暂时无法检查文件，请稍后重试",
 };
 export function RecoveryDiagnosticsPanel({
   onError,
@@ -35,7 +48,7 @@ export function RecoveryDiagnosticsPanel({
     <article className="panel-page">
       <h2>未完成文件操作诊断</h2>
       <p className="muted">
-        只读取当前仓库日志和目录状态，不修复、不移动、不清空。目录身份和附件完整性未在此核验。请先关闭相关程序；持续异常时保留仓库副本，不要手动删除
+        只读取当前仓库日志和路径状态，不修复、不移动、不清空。文件/目录身份和附件完整性未在此核验。请先关闭相关程序；持续异常时保留仓库副本，不要手动删除
         .copying- 临时目录。
       </p>
       <button disabled={busy} onClick={() => void inspect()}>
@@ -61,17 +74,25 @@ export function RecoveryDiagnosticsPanel({
                   <span>操作 ID：{item.id}</span>
                   <span>
                     来源：{item.source.relativePath ?? "路径已隐藏"} ·{" "}
-                    {pathStateText[item.source.state]}
+                    {
+                      (item.kind.startsWith("document")
+                        ? fileStateText
+                        : pathStateText)[item.source.state]
+                    }
                   </span>
                   <span>
                     目标：{item.target.relativePath ?? "路径已隐藏"} ·{" "}
-                    {pathStateText[item.target.state]}
+                    {
+                      (item.kind.startsWith("document")
+                        ? fileStateText
+                        : pathStateText)[item.target.state]
+                    }
                   </span>
                   {item.identityRecorded !== null && (
                     <span>
                       {item.identityRecorded
-                        ? "目录身份已记录，尚未核验是否匹配。"
-                        : "没有已记录的目录身份，不能据此安全清理。"}
+                        ? "文件/目录身份已记录，尚未核验是否匹配。"
+                        : "没有已记录的文件/目录身份，不能据此安全清理。"}
                     </span>
                   )}
                 </div>

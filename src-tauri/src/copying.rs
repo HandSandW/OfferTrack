@@ -360,7 +360,7 @@ fn lock_ancestors(root: &Path, parent: &Path) -> Result<Vec<File>, CoreError> {
     lock_ancestor_chain(root, parent, false)
 }
 
-fn lock_move_ancestors(root: &Path, parent: &Path) -> Result<Vec<File>, CoreError> {
+pub(crate) fn lock_move_ancestors(root: &Path, parent: &Path) -> Result<Vec<File>, CoreError> {
     lock_ancestor_chain(root, parent, true)
 }
 

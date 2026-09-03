@@ -118,6 +118,50 @@ fn views_rename_copy_update_and_delete_only_metadata_and_survive_reopen() {
 }
 
 #[test]
+fn business_view_filters_roundtrip_and_reject_unknown_semantics_without_writes() {
+    let dir = tempdir().unwrap();
+    let mut session = warehouse::create(dir.path()).unwrap();
+    let record = create_record(&mut session);
+    for state in ["preparing", "inProgress", "awaitingResult", "ended"] {
+        let mut request = view_request(state, false);
+        request.filter["businessState"] = json!(state);
+        let saved = views::save(&mut session, request).unwrap().view;
+        assert_eq!(saved.filter["businessState"], state);
+    }
+    for invalid in [
+        json!(null),
+        json!(true),
+        json!("unknown"),
+        json!(""),
+        json!(["ended"]),
+    ] {
+        let mut request = view_request("invalid", true);
+        request.filter["businessState"] = invalid;
+        assert!(matches!(
+            views::save(&mut session, request),
+            Err(CoreError::Validation)
+        ));
+    }
+    assert_eq!(views::list(&session).unwrap().len(), 4);
+    assert_eq!(
+        applications::get(&session, &record.record.id)
+            .unwrap()
+            .record
+            .revision,
+        1
+    );
+    drop(session);
+    let reopened = warehouse::open(dir.path(), WarehouseAccessMode::ReadOnly).unwrap();
+    let saved = views::list(&reopened).unwrap();
+    assert_eq!(saved.len(), 4);
+    assert!(
+        saved
+            .iter()
+            .all(|view| view.filter["businessState"] == view.name)
+    );
+}
+
+#[test]
 fn views_reject_stale_missing_and_foreign_kind_identifiers() {
     let dir = tempdir().unwrap();
     let mut session = warehouse::create(dir.path()).unwrap();

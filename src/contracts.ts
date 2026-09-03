@@ -137,6 +137,46 @@ export interface DocumentEntry {
   modifiedAtUtc: string | null;
   missing: boolean;
 }
+export interface TrashDocumentRequest {
+  applicationId: string;
+  documentId: string;
+  expectedRelativePath: string;
+}
+export interface DocumentTrashEntry {
+  id: string;
+  documentId: string;
+  applicationId: string;
+  companyName: string;
+  positionName: string;
+  displayName: string;
+  originalRelativePath: string;
+  deletedAtUtc: string;
+  parentDeleted: boolean;
+  fileState:
+    | "available"
+    | "missing"
+    | "wrongType"
+    | "busy"
+    | "accessDenied"
+    | "unsafe"
+    | "unavailable";
+}
+export interface RestoredDocument {
+  id: string;
+  applicationId: string;
+  documentId: string;
+  relativePath: string;
+  relocated: boolean;
+}
+export interface DocumentTrashChallenge {
+  confirmationToken: string;
+  itemIds: string[];
+  missingCount: number;
+}
+export interface DocumentTrashPurged {
+  deletedIds: string[];
+  failed: { id: string; error: AppErrorPayload }[];
+}
 
 export interface ApplicationListItem {
   id: string;
@@ -159,6 +199,8 @@ export interface ApplicationListItem {
   folderNormalizationPending: boolean;
   currentStageId: string | null;
   currentStageName: string;
+  currentStageKey: string | null;
+  currentStageTerminal: boolean;
   currentStageState: string;
   currentStateName: string;
   currentStateKind: StageState | null;
@@ -279,11 +321,26 @@ export interface FilterState {
   search: string;
   companyTypes: string[];
   stages: string[];
+  businessState?: BusinessState;
 }
+
+export type BusinessState =
+  "preparing" | "inProgress" | "awaitingResult" | "ended";
 
 export interface UnlinkedFolder {
   name: string;
   hidden: boolean;
+}
+
+export interface ApplicationDirectories {
+  version: number;
+  directories: { relativePath: string; empty: boolean }[];
+}
+export interface RenameDocumentRequest {
+  applicationId: string;
+  documentId: string;
+  expectedRelativePath: string;
+  newName: string;
 }
 
 export type PathState =

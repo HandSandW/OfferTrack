@@ -244,11 +244,12 @@ function FoldersPanel({ writable, onError }: Props) {
   const [attempt, setAttempt] = useState(0);
   const [claiming, setClaiming] = useState<string | null>(null);
   const [message, setMessage] = useState("");
+  const [includeHidden, setIncludeHidden] = useState(false);
   const { confirmLeave } = useDraftGuard();
   useEffect(() => {
     let active = true;
     void desktopApi
-      .listUnlinkedFolders(false)
+      .listUnlinkedFolders(includeHidden)
       .then((next) => {
         if (active) setFolders(next);
       })
@@ -264,7 +265,7 @@ function FoldersPanel({ writable, onError }: Props) {
     return () => {
       active = false;
     };
-  }, [onError, attempt]);
+  }, [onError, attempt, includeHidden]);
   const reload = () => {
     setLoading(true);
     setFailure("");
@@ -282,12 +283,30 @@ function FoldersPanel({ writable, onError }: Props) {
         </button>
       </div>
       {loading && <p role="status">正在扫描未关联文件夹…</p>}
+      <label>
+        <input
+          type="checkbox"
+          checked={includeHidden}
+          disabled={loading || !!claiming}
+          onChange={(event) => {
+            setIncludeHidden(event.target.checked);
+            setFolders([]);
+            reload();
+          }}
+        />
+        本次显示隐藏目录和点开头目录（高级）
+      </label>
+      <p className="muted">
+        仅扫描 applications
+        内的直接子目录；不会跟随目录联接点，也不会扫描仓库内部数据目录。离开设置后恢复默认隐藏。
+      </p>
       {failure && <p role="alert">{failure} 请重新扫描后重试。</p>}
       {message && <p role="status">{message}</p>}
       <div className="simple-list">
         {folders.map((folder) => (
           <article key={folder.name}>
             <strong>{folder.name}</strong>
+            {folder.hidden && <span className="muted">隐藏目录</span>}
             <button
               type="button"
               disabled={!writable || loading || !!failure}
@@ -304,6 +323,7 @@ function FoldersPanel({ writable, onError }: Props) {
       {claiming && (
         <ClaimEditor
           folder={claiming}
+          includeHidden={includeHidden}
           onError={onError}
           onCancel={() => {
             void confirmLeave().then((accepted) => {
@@ -323,11 +343,13 @@ function FoldersPanel({ writable, onError }: Props) {
 
 function ClaimEditor({
   folder,
+  includeHidden,
   onError,
   onCancel,
   onSaved,
 }: {
   folder: string;
+  includeHidden: boolean;
   onError: Props["onError"];
   onCancel: () => void;
   onSaved: () => void;
@@ -345,7 +367,7 @@ function ClaimEditor({
     setBusy(true);
     setFailure("");
     try {
-      await desktopApi.claimApplicationFolder(folder, form);
+      await desktopApi.claimApplicationFolder(folder, form, includeHidden);
       onSaved();
     } catch (error) {
       setFailure(errorText(error));

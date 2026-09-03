@@ -52,6 +52,42 @@ afterEach(() => {
 });
 
 describe("metadata settings forms", () => {
+  it("opts in to hidden folders for this panel and passes that scope to claims", async () => {
+    vi.mocked(desktopApi.listUnlinkedFolders)
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([{ name: ".hidden", hidden: true }]);
+    const claim = vi
+      .spyOn(desktopApi, "claimApplicationFolder")
+      .mockResolvedValue(applicationFixture());
+    show();
+    await screen.findByText("没有发现未关联文件夹。");
+    fireEvent.click(screen.getByRole("checkbox", { name: /本次显示隐藏目录/ }));
+    await screen.findByText("隐藏目录");
+    expect(desktopApi.listUnlinkedFolders).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: "用此文件夹新建投递" }));
+    expect(
+      screen.getByRole("checkbox", { name: /本次显示隐藏目录/ }),
+    ).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("岗位名称"), {
+      target: { value: "研发" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建并规范化名称" }));
+    await waitFor(() =>
+      expect(claim).toHaveBeenCalledWith(
+        ".hidden",
+        expect.objectContaining({ positionName: "研发" }),
+        true,
+      ),
+    );
+    cleanup();
+    show(false);
+    await waitFor(() =>
+      expect(desktopApi.listUnlinkedFolders).toHaveBeenLastCalledWith(false),
+    );
+    expect(
+      screen.getByRole("checkbox", { name: /本次显示隐藏目录/ }),
+    ).not.toBeChecked();
+  });
   it("loads fields and folder candidates independently and retries without showing a false empty state", async () => {
     vi.mocked(desktopApi.listFieldDefinitions).mockRejectedValueOnce(
       new Error("字段读取失败"),
@@ -184,6 +220,7 @@ describe("metadata settings forms", () => {
         companyName: "我的目录",
         positionName: "开发工程师",
       }),
+      false,
     );
     expect(
       screen.getByRole("button", { name: "用此文件夹新建投递" }),

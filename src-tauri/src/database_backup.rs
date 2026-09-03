@@ -323,6 +323,9 @@ pub(crate) fn inspect_records(connection: &Connection) -> Result<(i64, i64), Cor
     for (table, condition) in [
         ("file_operations", "completed_at_utc IS NULL"),
         ("record_creations", "state IN ('copying','verified')"),
+        ("document_renames", "completed_at_utc IS NULL"),
+        ("document_moves", "completed_at_utc IS NULL"),
+        ("document_purges", "completed_at_utc IS NULL"),
     ] {
         let exists: bool = connection
             .query_row(

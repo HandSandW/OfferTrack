@@ -1,0 +1,83 @@
+{
+  "formatVersion": 1,
+  "cargoMissingLicenseFiles": {
+    "alloc-stdlib@0.2.4": {
+      "selectedLicense": "BSD-3-Clause",
+      "sourcePackage": "alloc-no-stdlib@2.0.4",
+      "sourceFiles": ["LICENSE"],
+      "reason": "The paired crate from the same upstream project carries the BSD-3-Clause text."
+    },
+    "defmt-parser@1.0.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "defmt@1.1.1",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The related defmt crate carries the selected MIT text."
+    },
+    "plist@1.10.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "serde@1.0.229",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT and omits a license file from its crate archive."
+    },
+    "selectors@0.36.1": {
+      "selectedLicense": "MPL-2.0",
+      "sourcePackage": "cssparser@0.36.0",
+      "sourceFiles": ["LICENSE"],
+      "reason": "A related Servo crate carries the MPL-2.0 text."
+    },
+    "tauri-plugin@2.6.3": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "tauri@2.11.5",
+      "sourceFiles": ["LICENSE_MIT"],
+      "reason": "The Tauri workspace package carries the selected MIT text."
+    },
+    "unic-char-property@0.9.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "unicode-ident@1.0.24",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT/Apache-2.0 and omits license files from its crate archive."
+    },
+    "unic-char-range@0.9.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "unicode-ident@1.0.24",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT/Apache-2.0 and omits license files from its crate archive."
+    },
+    "unic-common@0.9.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "unicode-ident@1.0.24",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT/Apache-2.0 and omits license files from its crate archive."
+    },
+    "unic-ucd-ident@0.9.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "unicode-ident@1.0.24",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT/Apache-2.0 and omits license files from its crate archive."
+    },
+    "unic-ucd-version@0.9.0": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "unicode-ident@1.0.24",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT/Apache-2.0 and omits license files from its crate archive."
+    },
+    "webview2-com@0.38.2": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "serde@1.0.229",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT and omits a license file from its crate archive."
+    },
+    "webview2-com-macros@0.8.1": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "serde@1.0.229",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT and omits a license file from its crate archive."
+    },
+    "webview2-com-sys@0.38.2": {
+      "selectedLicense": "MIT",
+      "sourcePackage": "serde@1.0.229",
+      "sourceFiles": ["LICENSE-MIT"],
+      "reason": "The package declares MIT and omits a license file from its crate archive."
+    }
+  }
+}

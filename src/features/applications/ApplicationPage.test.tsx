@@ -179,6 +179,173 @@ describe("application management", () => {
     );
   });
 
+  it("uses presets in read-only archives and saves a semantic filter for the next session", async () => {
+    const ended = applicationFixture({
+      id: "ended",
+      companyName: "已结束公司",
+      currentStageKey: "interview",
+      currentStageTerminal: true,
+      currentStageState: "failed",
+    });
+    vi.mocked(desktopApi.listApplications).mockResolvedValue([
+      applicationFixture(),
+      ended,
+    ]);
+    const saved = {
+      id: "view",
+      revision: 1,
+      name: "结果跟踪",
+      isDefault: true,
+      layout: { columns: defaultColumns },
+      filter: { ...initialFilter, businessState: "ended" as const },
+      sort: [{ key: "createdAtUtc", direction: "desc" as const }],
+      group: null,
+    };
+    const save = vi
+      .spyOn(desktopApi, "saveApplicationView")
+      .mockResolvedValue({ view: saved, views: [saved] });
+    const mounted = render(
+      <ApplicationPage scope="active" writable onError={onError} />,
+      { wrapper: DraftGuardProvider },
+    );
+    await screen.findByText("已结束公司");
+    fireEvent.change(screen.getByLabelText("快捷视图"), {
+      target: { value: "ended" },
+    });
+    expect(screen.queryByText("示例公司")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存视图" }));
+    fireEvent.change(await screen.findByLabelText("视图名称"), {
+      target: { value: "结果跟踪" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() =>
+      expect(save).toHaveBeenCalledWith(
+        expect.objectContaining({ filter: saved.filter }),
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
+    );
+    mounted.unmount();
+    vi.mocked(desktopApi.listApplicationViews).mockResolvedValue([saved]);
+    render(
+      <ApplicationPage scope="archived" writable={false} onError={onError} />,
+      { wrapper: DraftGuardProvider },
+    );
+    await screen.findByText("已结束公司");
+    expect(desktopApi.listApplications).toHaveBeenLastCalledWith("archived");
+    expect(screen.getByLabelText("业务状态筛选")).toHaveValue("ended");
+    expect(screen.queryByText("示例公司")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存视图" })).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("快捷视图"), {
+      target: { value: "all" },
+    });
+    expect(screen.getByText("示例公司")).toBeInTheDocument();
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves draft, columns and selection when a preset exits an overview scope", async () => {
+    const ended = applicationFixture({
+      id: "ended",
+      companyName: "已结束公司",
+      currentStageKey: "offer",
+      currentStageTerminal: true,
+    });
+    vi.mocked(desktopApi.listApplications).mockResolvedValue([
+      applicationFixture(),
+      ended,
+    ]);
+    vi.mocked(desktopApi.listApplicationViews).mockResolvedValue([
+      {
+        id: "layout",
+        revision: 1,
+        name: "公司列",
+        isDefault: true,
+        layout: {
+          columns: defaultColumns.map((column) => ({
+            ...column,
+            visible: column.key === "companyName",
+            width: 300,
+          })),
+        },
+        sort: [],
+        filter: initialFilter,
+        group: null,
+      },
+    ]);
+    const onRecycle = vi.fn();
+    render(
+      <ApplicationPage
+        scope="active"
+        writable
+        onError={onError}
+        onRecycle={onRecycle}
+        drilldown={{
+          label: "测试范围",
+          ids: ["fixture-application", "missing"],
+        }}
+      />,
+      { wrapper: DraftGuardProvider },
+    );
+    fireEvent.click(await screen.findByText("示例公司"));
+    fireEvent.change(await screen.findByLabelText("岗位名称"), {
+      target: { value: "保留此草稿" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "选择本页" }));
+    fireEvent.change(screen.getByLabelText("快捷视图"), {
+      target: { value: "ended" },
+    });
+    expect(
+      screen.queryByRole("button", { name: "清除概览范围" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("已结束公司")).toBeInTheDocument();
+    expect(screen.getByLabelText("岗位名称")).toHaveValue("保留此草稿");
+    expect(screen.getByText("已选 1 条（跨页保留）")).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "公司名称" })).toHaveStyle({
+      width: "300px",
+    });
+    expect(
+      screen.queryByRole("columnheader", { name: /创建日期/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("快捷视图"), {
+      target: { value: "recycle" },
+    });
+    expect(onRecycle).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText("快捷视图")).toHaveValue("ended");
+  });
+
+  it("intersects the business filter with search without dropping an empty overview scope", async () => {
+    render(
+      <ApplicationPage
+        scope="active"
+        writable={false}
+        onError={onError}
+        drilldown={{ label: "空范围", ids: [] }}
+      />,
+      { wrapper: DraftGuardProvider },
+    );
+    await screen.findByText("没有符合当前条件的投递记录。");
+    fireEvent.change(screen.getByLabelText("业务状态筛选"), {
+      target: { value: "preparing" },
+    });
+    expect(screen.queryByText("示例公司")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "清除概览范围" }));
+    expect(screen.getByText("示例公司")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("搜索投递"), {
+      target: { value: "无此公司" },
+    });
+    expect(screen.queryByText("示例公司")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("业务状态筛选")).toHaveValue("preparing");
+    expect(screen.getByLabelText("快捷视图")).toHaveValue("");
+    fireEvent.change(screen.getByLabelText("快捷视图"), {
+      target: { value: "all" },
+    });
+    expect(screen.getByLabelText("搜索投递")).toHaveValue("");
+    expect(screen.getByLabelText("业务状态筛选")).toHaveValue("");
+    expect(screen.getByText("示例公司")).toBeInTheDocument();
+  });
+
   it("opens URLs only with Ctrl+click and keeps a read-only view from saving settings", async () => {
     render(
       <ApplicationPage scope="active" writable={false} onError={onError} />,

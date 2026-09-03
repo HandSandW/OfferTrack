@@ -71,6 +71,38 @@ fn observe(root: &Path, relative: &str, trash: bool) -> PathObservation {
     }
 }
 
+pub(crate) fn observe_file_path(
+    root: &Path,
+    path: Result<std::path::PathBuf, CoreError>,
+) -> PathObservation {
+    let path = match path {
+        Ok(path) => path,
+        Err(error) => {
+            return PathObservation {
+                relative_path: None,
+                state: state_for_error(error),
+            };
+        }
+    };
+    let state = match fs::symlink_metadata(&path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink() || filesystem::is_reparse_point(&metadata) =>
+        {
+            PathState::Unsafe
+        }
+        Ok(metadata) if metadata.is_file() => PathState::Available,
+        Ok(_) => PathState::WrongType,
+        Err(error) => state_for_error(file_error(error)),
+    };
+    PathObservation {
+        relative_path: path
+            .strip_prefix(root)
+            .ok()
+            .map(|p| p.to_string_lossy().replace('\\', "/")),
+        state,
+    }
+}
+
 pub fn inspect_application(
     session: &WarehouseSession,
     id: &str,
@@ -103,7 +135,10 @@ pub fn recovery_diagnostics(session: &WarehouseSession) -> Result<RecoveryDiagno
         .query_row(
             "SELECT
         (SELECT COUNT(*) FROM record_creations WHERE state IN ('copying', 'verified')) +
-        (SELECT COUNT(*) FROM file_operations WHERE completed_at_utc IS NULL)",
+        (SELECT COUNT(*) FROM file_operations WHERE completed_at_utc IS NULL) +
+        (SELECT COUNT(*) FROM document_renames WHERE completed_at_utc IS NULL) +
+        (SELECT COUNT(*) FROM document_moves WHERE completed_at_utc IS NULL) +
+        (SELECT COUNT(*) FROM document_purges WHERE completed_at_utc IS NULL)",
             [],
             |r| r.get(0),
         )
@@ -145,6 +180,69 @@ pub fn recovery_diagnostics(session: &WarehouseSession) -> Result<RecoveryDiagno
     }
     let mut statement = connection
         .prepare(
+            "SELECT id,trash_id,kind,folder_relative_path,document_relative_path
+         FROM document_moves WHERE completed_at_utc IS NULL ORDER BY created_at_utc,id LIMIT 100",
+        )
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, String>(4)?,
+            ))
+        })
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (id, trash_id, kind, folder, relative) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        let live = observe_document(session.root(), &folder, &relative);
+        let recycled = observe_file_path(
+            session.root(),
+            crate::document_trash::trash_path(session.root(), &trash_id),
+        );
+        let (source, target) = if kind == "trash" {
+            (live, recycled)
+        } else {
+            (recycled, live)
+        };
+        items.push(PendingFileOperation {
+            id,
+            kind: if kind == "trash" {
+                "documentTrash"
+            } else {
+                "documentRestore"
+            }
+            .into(),
+            source,
+            target,
+            identity_recorded: Some(true),
+        });
+    }
+    let mut statement=connection.prepare("SELECT id,trash_id FROM document_purges WHERE completed_at_utc IS NULL ORDER BY created_at_utc,id LIMIT 100").map_err(|_|CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (id, trash_id) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        let source = observe_file_path(
+            session.root(),
+            crate::document_trash::trash_path(session.root(), &trash_id),
+        );
+        items.push(PendingFileOperation {
+            id,
+            kind: "documentPurge".into(),
+            source,
+            target: PathObservation {
+                relative_path: None,
+                state: PathState::Unavailable,
+            },
+            identity_recorded: Some(true),
+        });
+    }
+    let mut statement = connection
+        .prepare(
             "SELECT id, operation_kind, source_relative_path, target_relative_path
         FROM file_operations WHERE completed_at_utc IS NULL ORDER BY created_at_utc, id LIMIT 100",
         )
@@ -169,11 +267,63 @@ pub fn recovery_diagnostics(session: &WarehouseSession) -> Result<RecoveryDiagno
             identity_recorded: None,
         });
     }
+    let mut statement = connection.prepare(
+        "SELECT id, folder_relative_path, source_relative_path, target_relative_path
+         FROM document_renames WHERE completed_at_utc IS NULL ORDER BY created_at_utc, id LIMIT 100"
+    ).map_err(|_| CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (id, folder, source, target) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        items.push(PendingFileOperation {
+            id,
+            kind: "documentRename".into(),
+            source: observe_document(session.root(), &folder, &source),
+            target: observe_document(session.root(), &folder, &target),
+            identity_recorded: Some(true),
+        });
+    }
     Ok(RecoveryDiagnostics {
         version: 1,
         total_pending,
         items,
     })
+}
+
+fn observe_document(root: &Path, folder: &str, relative: &str) -> PathObservation {
+    let path = filesystem::application_folder(root, folder)
+        .and_then(|folder| crate::document_files::checked_target_path(root, &folder, relative));
+    let path = match path {
+        Ok(path) => path,
+        Err(error) => {
+            return PathObservation {
+                relative_path: None,
+                state: state_for_error(error),
+            };
+        }
+    };
+    let state = match fs::symlink_metadata(path) {
+        Ok(metadata)
+            if metadata.file_type().is_symlink() || filesystem::is_reparse_point(&metadata) =>
+        {
+            PathState::Unsafe
+        }
+        Ok(metadata) if metadata.is_file() => PathState::Available,
+        Ok(_) => PathState::WrongType,
+        Err(error) => state_for_error(file_error(error)),
+    };
+    PathObservation {
+        relative_path: Some(format!("{folder}/{relative}")),
+        state,
+    }
 }
 
 #[cfg(test)]

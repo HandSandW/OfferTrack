@@ -345,7 +345,7 @@ fn cross_process_entry_requires_same_lock_and_no_recovery_or_upgrade() {
     ));
     drop(s);
     let c = rusqlite::Connection::open(path.join("offertrack.sqlite")).unwrap();
-    c.execute("DELETE FROM schema_migrations WHERE version=9", [])
+    c.execute("DELETE FROM schema_migrations WHERE version>=9", [])
         .unwrap();
     drop(c);
     assert!(execute(&path, &r, "cli").is_err());
@@ -524,4 +524,80 @@ fn pending_recovery_is_not_executed_and_invalid_permission_fails_closed() {
             .count(),
         0
     );
+}
+
+#[test]
+fn pending_document_rename_blocks_agent_without_replaying_file_operations() {
+    let (_temp, mut s, id) = fixture();
+    allow(&mut s);
+    let request = append(&s, &id, "不得覆盖待恢复附件");
+    let path = s.root().to_owned();
+    s.connection_mut().unwrap().execute_batch("INSERT INTO document_renames VALUES ('pending-rename', 1, 'record', 'document', 'applications/synthetic', 'a.pdf', 'b.pdf', 'identity', 'now', NULL, NULL)").unwrap();
+    drop(s);
+    assert!(matches!(
+        execute(&path, &request, "cli"),
+        Err(CoreError::BackupPendingOperations)
+    ));
+    let connection = rusqlite::Connection::open(path.join("offertrack.sqlite")).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM document_renames WHERE completed_at_utc IS NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        applications::load_record(&connection, &id).unwrap().notes,
+        ""
+    );
+    assert!(!path.join("applications/synthetic").exists());
+}
+
+#[test]
+fn pending_document_trash_or_purge_blocks_agent_without_replaying_deletion() {
+    let (_temp, mut s, id) = fixture();
+    allow(&mut s);
+    let request = append(&s, &id, "不得越过附件恢复日志");
+    let path = s.root().to_owned();
+    s.connection_mut().unwrap().execute("INSERT INTO document_trash(id,version,document_id,application_id,relative_path,display_name,discovered_at_utc,last_observed_at_utc,deleted_at_utc,state) VALUES('trash',1,'document',?1,'a.pdf','a.pdf','now','now','now','pending')",[&id]).unwrap();
+    s.connection_mut().unwrap().execute_batch("INSERT INTO document_moves VALUES ('move',1,'trash','trash','applications/synthetic','a.pdf','identity','now',NULL,NULL)").unwrap();
+    drop(s);
+    assert!(matches!(
+        execute(&path, &request, "cli"),
+        Err(CoreError::BackupPendingOperations)
+    ));
+    let connection = rusqlite::Connection::open(path.join("offertrack.sqlite")).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM document_moves WHERE completed_at_utc IS NULL",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    connection
+        .execute(
+            "UPDATE document_moves SET completed_at_utc='done',outcome='cancelled' WHERE id='move'",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute_batch("INSERT INTO document_purges VALUES ('purge',1,'trash','now',NULL,NULL)")
+        .unwrap();
+    drop(connection);
+    assert!(matches!(
+        execute(&path, &request, "cli"),
+        Err(CoreError::BackupPendingOperations)
+    ));
+    let connection = rusqlite::Connection::open(path.join("offertrack.sqlite")).unwrap();
+    assert_eq!(
+        applications::load_record(&connection, &id).unwrap().notes,
+        ""
+    );
+    assert!(!path.join("recycle-bin/documents/trash").exists());
 }

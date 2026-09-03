@@ -208,6 +208,8 @@ pub fn open(path: &Path, access_mode: WarehouseAccessMode) -> Result<WarehouseSe
     }
 
     let mut session = build_session(root, descriptor, access_mode, lock, connection);
+    crate::document_files::recover(&mut session)?;
+    crate::document_trash::recover(&mut session)?;
     crate::recycle_bin::recover_moves(&mut session)?;
     crate::copying::recover(&mut session)?;
     crate::database_backup::ensure_daily(&mut session)?;

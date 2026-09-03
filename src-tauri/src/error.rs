@@ -61,6 +61,12 @@ pub enum CoreError {
     FileAccessDenied,
     #[error("unexpected filesystem entry type")]
     FileTypeMismatch,
+    #[error("document target conflicts with an existing file or index")]
+    DocumentNameConflict,
+    #[error("interrupted document rename requires recovery")]
+    DocumentRenameRecovery,
+    #[error("interrupted document trash operation requires recovery")]
+    DocumentTrashRecovery,
     #[error("copied files could not be verified")]
     CopyVerification,
     #[error("interrupted copy requires recovery")]
@@ -214,6 +220,21 @@ impl From<CoreError> for AppErrorPayload {
             CoreError::FileTypeMismatch => Self {
                 code: "FILE_TYPE_MISMATCH",
                 message: "预期的文件或目录已被其他类型的项目替代。请检查原位置，不会覆盖该项目。",
+                retryable: true,
+            },
+            CoreError::DocumentNameConflict => Self {
+                code: "DOCUMENT_NAME_CONFLICT",
+                message: "目标名称已有文件或保留索引，未覆盖。请选择其他名称；仅改变英文字母大小写时请先改为一个临时名称。",
+                retryable: true,
+            },
+            CoreError::DocumentRenameRecovery => Self {
+                code: "DOCUMENT_RENAME_RECOVERY",
+                message: "附件重命名尚未完成，原文件和日志已保留。请关闭占用程序后重开仓库；若仍失败，可只读打开查看文件操作诊断。请勿覆盖或删除任一候选文件。",
+                retryable: true,
+            },
+            CoreError::DocumentTrashRecovery => Self {
+                code: "DOCUMENT_TRASH_RECOVERY",
+                message: "附件回收站操作尚未完成，文件和恢复日志已保留。请关闭占用程序后重开仓库；若仍失败，可只读打开查看诊断。不要覆盖候选文件。",
                 retryable: true,
             },
             CoreError::WarehouseNotOpen => Self {

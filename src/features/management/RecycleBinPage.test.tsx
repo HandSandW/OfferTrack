@@ -5,7 +5,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { desktopApi } from "../../lib/tauri";
 import { DraftGuardProvider } from "../../shared/DraftGuardProvider";
 import { RecycleBinPage } from "./PhaseTwoPages";
@@ -21,6 +21,9 @@ const item = {
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+});
+beforeEach(() => {
+  vi.spyOn(desktopApi, "listDocumentTrash").mockResolvedValue([]);
 });
 it("requires an explicit second confirmation before sending the bound purge token", async () => {
   vi.spyOn(desktopApi, "listTrash").mockResolvedValue([item]);

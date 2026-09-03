@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::error::CoreError;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 9;
+pub const CURRENT_SCHEMA_VERSION: i64 = 11;
 
 struct Migration {
     version: i64,
@@ -56,6 +56,16 @@ const MIGRATIONS: &[Migration] = &[
         version: 9,
         name: "recruitment_schedule",
         sql: include_str!("../migrations/0009_recruitment_schedule.sql"),
+    },
+    Migration {
+        version: 10,
+        name: "document_renames",
+        sql: include_str!("../migrations/0010_document_renames.sql"),
+    },
+    Migration {
+        version: 11,
+        name: "document_trash",
+        sql: include_str!("../migrations/0011_document_trash.sql"),
     },
 ];
 
@@ -152,6 +162,12 @@ pub(crate) fn fixture_remove_migration_eight(connection: &Connection) {
 
 #[cfg(test)]
 pub(crate) fn fixture_remove_migration_nine(connection: &Connection) {
+    connection
+        .execute_batch(
+            "DROP TABLE document_purges; DROP TABLE document_moves; DROP TABLE document_trash;
+             DROP TABLE document_renames; DELETE FROM schema_migrations WHERE version>=10;",
+        )
+        .unwrap();
     connection.execute_batch("DROP TRIGGER event_round_owner_insert; DROP TRIGGER event_round_owner_update;
         DROP INDEX idx_event_interview; ALTER TABLE recruitment_events DROP COLUMN interview_round_id;
         ALTER TABLE recruitment_events DROP COLUMN revision; ALTER TABLE recruitment_events DROP COLUMN deadline_at_utc;
@@ -162,6 +178,80 @@ pub(crate) fn fixture_remove_migration_nine(connection: &Connection) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn migration_ten_preserves_documents_and_adds_versioned_rename_journal_atomically() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        configure_connection(&connection).unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at_utc TEXT NOT NULL)").unwrap();
+        for migration in &MIGRATIONS[..9] {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        connection
+            .execute_batch("CREATE TABLE document_renames (unrelated TEXT)")
+            .unwrap();
+        assert!(migrate(&mut connection).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            9
+        );
+        connection
+            .execute_batch("DROP TABLE document_renames")
+            .unwrap();
+        let old_document_schema: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='documents'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        migrate(&mut connection).unwrap();
+        migrate(&mut connection).unwrap();
+        let current_document_schema: String = connection
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE name='documents'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(old_document_schema, current_document_schema);
+        assert!(connection.execute_batch("INSERT INTO document_renames VALUES ('op', 2, 'record', 'doc', 'applications/folder', 'a.pdf', 'b.pdf', 'identity', 'now', NULL, NULL)").is_err());
+    }
+
+    #[test]
+    fn migration_eleven_adds_versioned_document_trash_journals() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        configure_connection(&connection).unwrap();
+        connection.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY,name TEXT NOT NULL,applied_at_utc TEXT NOT NULL)").unwrap();
+        for migration in &MIGRATIONS[..10] {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        connection
+            .execute_batch("CREATE TABLE document_trash(unrelated TEXT)")
+            .unwrap();
+        assert!(migrate(&mut connection).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |r| r
+                    .get::<_, i64>(0))
+                .unwrap(),
+            10
+        );
+        connection
+            .execute_batch("DROP TABLE document_trash")
+            .unwrap();
+        migrate(&mut connection).unwrap();
+        assert!(connection.execute_batch("INSERT INTO document_trash VALUES ('id',2,'d','a','x','x',NULL,NULL,NULL,'n','n','n','active')").is_err());
+        assert!(connection.execute_batch("INSERT INTO document_moves VALUES ('id',2,'t','trash','folder','x','identity','now',NULL,NULL)").is_err());
+        assert!(
+            connection
+                .execute_batch("INSERT INTO document_purges VALUES ('id',2,'t','now',NULL,NULL)")
+                .is_err()
+        );
+    }
 
     #[test]
     fn migration_nine_rolls_back_all_added_columns_when_index_creation_fails() {
@@ -332,6 +422,10 @@ mod tests {
             "settings",
             "file_operations",
             "record_creations",
+            "document_renames",
+            "document_trash",
+            "document_moves",
+            "document_purges",
         ] {
             let found: i64 = connection
                 .query_row(

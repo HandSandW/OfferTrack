@@ -23,9 +23,17 @@ OfferTrack-export-*/
 agent-access/
 .offertrack-agent-instructions-*.pending
 
-# Keep evolving project documentation local until the public documentation is stable.
+# Keep development-process documents local. Only the public user/release set is tracked.
 /*.md
-docs/
+!/README.md
+!/CHANGELOG.md
+!/SECURITY.md
+!/THIRD_PARTY_NOTICES.md
+/docs/*
+!/docs/agent-api.md
+!/docs/backup-format.md
+!/docs/user-guide/
+!/docs/user-guide/README.md
 .github/ISSUE_TEMPLATE/
 .github/pull_request_template.md
 

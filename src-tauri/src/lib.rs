@@ -8,6 +8,8 @@ mod backup_archive;
 mod batch;
 mod copying;
 mod database_backup;
+mod document_files;
+mod document_trash;
 mod domain;
 mod error;
 mod export;
@@ -34,6 +36,9 @@ mod metadata_tests;
 
 #[cfg(test)]
 mod mvp_acceptance_tests;
+
+#[cfg(test)]
+mod performance_tests;
 
 use std::{
     path::PathBuf,
@@ -68,6 +73,7 @@ struct AppState {
     warehouse: Mutex<Option<WarehouseSession>>,
     trash_confirmation: Mutex<Option<TrashConfirmation>>,
     backup_trash_confirmation: Mutex<Option<recycle_bin::backups::Confirmation>>,
+    document_trash_confirmation: Mutex<Option<document_trash::cleanup::Confirmation>>,
     file_watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
@@ -315,6 +321,8 @@ fn write_session<T>(
 ) -> Result<T, AppErrorPayload> {
     let mut active = session_access::try_lock(&state.warehouse)?;
     let session = active.as_mut().ok_or(CoreError::WarehouseNotOpen)?;
+    document_files::recover(session)?;
+    document_trash::recover(session)?;
     database_backup::ensure_daily(session)?;
     operation(session).map_err(Into::into)
 }
@@ -630,6 +638,16 @@ fn update_application(
 }
 
 #[tauri::command]
+fn edit_application_cell(
+    state: State<'_, AppState>,
+    request: applications::cell_edit::Request,
+) -> Result<applications::cell_edit::Applied, AppErrorPayload> {
+    write_session(&state, |session| {
+        applications::cell_edit::apply(session, request)
+    })
+}
+
+#[tauri::command]
 fn change_application_stage(
     state: State<'_, AppState>,
     request: ChangeStageRequest,
@@ -865,6 +883,69 @@ fn scan_application_documents(
 ) -> Result<Vec<crate::domain::DocumentEntry>, AppErrorPayload> {
     write_session(&state, |session| {
         applications::scan_documents(session, &application_id)
+    })
+}
+
+#[tauri::command]
+fn rename_document(
+    state: State<'_, AppState>,
+    request: document_files::RenameDocumentRequest,
+) -> Result<ApplicationDetail, AppErrorPayload> {
+    write_session(&state, |session| document_files::rename(session, request))
+}
+
+#[tauri::command]
+fn trash_document(
+    state: State<'_, AppState>,
+    request: document_trash::TrashRequest,
+) -> Result<ApplicationDetail, AppErrorPayload> {
+    write_session(&state, |session| document_trash::trash(session, request))
+}
+
+#[tauri::command]
+fn list_document_trash(
+    state: State<'_, AppState>,
+) -> Result<Vec<document_trash::Entry>, AppErrorPayload> {
+    read_session(&state, document_trash::list)
+}
+
+#[tauri::command]
+fn restore_document(
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<document_trash::Restored, AppErrorPayload> {
+    write_session(&state, |session| document_trash::restore(session, &id))
+}
+
+#[tauri::command]
+fn prepare_document_trash_cleanup(
+    state: State<'_, AppState>,
+) -> Result<document_trash::cleanup::Challenge, AppErrorPayload> {
+    let (confirmation, challenge) = read_session(&state, document_trash::cleanup::prepare)?;
+    *session_access::try_lock(&state.document_trash_confirmation)? = Some(confirmation);
+    Ok(challenge)
+}
+
+#[tauri::command]
+fn empty_document_trash(
+    state: State<'_, AppState>,
+    confirmation_token: String,
+) -> Result<document_trash::cleanup::Purged, AppErrorPayload> {
+    let confirmation = session_access::try_lock(&state.document_trash_confirmation)?
+        .take()
+        .ok_or(CoreError::InvalidConfirmation)?;
+    write_session(&state, |session| {
+        document_trash::cleanup::purge(session, confirmation, &confirmation_token)
+    })
+}
+
+#[tauri::command]
+fn list_application_directories(
+    state: State<'_, AppState>,
+    application_id: String,
+) -> Result<document_files::ApplicationDirectories, AppErrorPayload> {
+    read_session(&state, |session| {
+        document_files::list_directories(session, &application_id)
     })
 }
 
@@ -1267,6 +1348,7 @@ pub fn run() {
                 get_application,
                 create_application,
                 update_application,
+                edit_application_cell,
                 change_application_stage,
                 save_workflow_stage,
                 delete_workflow_stage,
@@ -1292,6 +1374,13 @@ pub fn run() {
                 set_application_page_size,
                 set_application_archived,
                 scan_application_documents,
+                rename_document,
+                trash_document,
+                list_document_trash,
+                restore_document,
+                prepare_document_trash_cleanup,
+                empty_document_trash,
+                list_application_directories,
                 refresh_file_index,
                 list_unlinked_folders,
                 claim_application_folder,

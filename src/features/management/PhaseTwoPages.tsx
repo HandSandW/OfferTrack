@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { TrashEntry } from "../../contracts";
 import { desktopApi } from "../../lib/tauri";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
+import { DocumentTrashPanel } from "./DocumentTrashPanel";
 
 export function RecycleBinPage({
   writable,
@@ -153,6 +154,7 @@ export function RecycleBinPage({
       {!items.length && !loading && !failure && (
         <div className="table-empty">回收站为空。</div>
       )}
+      <DocumentTrashPanel writable={writable} onError={onError} />
     </section>
   );
 }

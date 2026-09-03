@@ -1,9 +1,15 @@
 import { useEffect, useState } from "react";
-import type { ApplicationDetail, PathObservation } from "../../contracts";
+import type {
+  ApplicationDetail,
+  ApplicationDirectories,
+  DocumentEntry,
+  PathObservation,
+} from "../../contracts";
 import { desktopApi } from "../../lib/tauri";
-import { useDraftState } from "../../shared/draftGuard";
+import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
 import { pathStateText } from "./fileStatus";
 import { DocumentTree } from "./DocumentTree";
+import { RenameDocumentDialog } from "./RenameDocumentDialog";
 
 export function FilesPanel({
   detail,
@@ -22,13 +28,38 @@ export function FilesPanel({
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const [message, setMessage] = useState("");
+  const [directories, setDirectories] = useState<
+    ApplicationDirectories["directories"]
+  >([]);
+  const [directoryFailure, setDirectoryFailure] = useState("");
+  const [renaming, setRenaming] = useState<DocumentEntry | null>(null);
   useDraftState(false, busy, "文件操作");
+  const { confirm } = useDraftGuard();
   useEffect(() => {
     let active = true;
     void desktopApi
       .inspectApplicationFiles(detail.id)
       .then((value) => {
         if (active) setHealth(value);
+        if (active && value.state === "available") {
+          return desktopApi
+            .listApplicationDirectories(detail.id)
+            .then((result) => {
+              if (active) {
+                setDirectories(result.directories);
+                setDirectoryFailure("");
+              }
+            })
+            .catch((error: unknown) => {
+              if (active) {
+                setDirectoryFailure(
+                  error instanceof Error ? error.message : "子目录读取失败",
+                );
+                onError(error);
+              }
+            });
+        }
+        if (active) setDirectories([]);
       })
       .catch((error: unknown) => {
         if (active) {
@@ -53,6 +84,8 @@ export function FilesPanel({
     setLoading(true);
     setHealth(null);
     setFailure("");
+    setDirectories([]);
+    setDirectoryFailure("");
     setAttempt((n) => n + 1);
   };
   const run = async (operation: () => Promise<void>) => {
@@ -77,6 +110,12 @@ export function FilesPanel({
         <p role="alert">{failure} 上次索引仍保留，可检查目录或重新扫描。</p>
       )}
       {message && <p role="status">{message}</p>}
+      {directoryFailure && (
+        <p role="alert">
+          {directoryFailure}{" "}
+          子目录列表可能已过期；附件索引仍保留，可点击“检查目录”重试。
+        </p>
+      )}
       {loading ? (
         <p role="status">正在检查目录…</p>
       ) : (
@@ -158,13 +197,53 @@ export function FilesPanel({
         disabled={busy || unavailable}
         run={run}
         onCopied={() => setMessage("文件路径已复制。")}
+        directories={directories}
+        onRename={writable && !renaming ? setRenaming : undefined}
+        onTrash={
+          writable
+            ? (document) =>
+                void run(async () => {
+                  if (
+                    !(await confirm({
+                      title: "删除附件",
+                      message: `将“${document.displayName}”移入附件回收站？之后可恢复。`,
+                      confirmLabel: "是",
+                      destructive: true,
+                    }))
+                  )
+                    return;
+                  const next = await desktopApi.trashDocument({
+                    applicationId: detail.id,
+                    documentId: document.id,
+                    expectedRelativePath: document.relativePath,
+                  });
+                  onChange(next);
+                  check();
+                  setMessage("附件已移入回收站；文件和元数据可在回收站恢复。");
+                })
+            : undefined
+        }
       />
+      {renaming && (
+        <RenameDocumentDialog
+          applicationId={detail.id}
+          document={renaming}
+          onCancel={() => setRenaming(null)}
+          onSaved={(next) => {
+            setRenaming(null);
+            onChange(next);
+            check();
+            setMessage("附件已重命名，文件内容和附件 ID 保持不变。");
+          }}
+          onError={onError}
+        />
+      )}
       {!loading &&
         !failure &&
         health?.state === "available" &&
         !detail.documents.length && (
           <p className="muted">
-            索引中暂无附件。可在资源管理器放入材料，再重新扫描；目录检查不会扫描全部文件。
+            索引中暂无附件。可在资源管理器放入材料，再重新扫描；目录检查只读取目录结构，不回写附件索引。
           </p>
         )}
     </>

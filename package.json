@@ -13,8 +13,14 @@
     "format:check": "prettier --check .",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:release": "node --test scripts/release/*.node-test.mjs",
+    "release:audit": "node scripts/release/audit-release.mjs",
+    "release:build": "node scripts/release/build-release.mjs",
+    "release:portable": "node scripts/release/package-portable.mjs",
+    "license:generate": "node scripts/release/generate-third-party-notices.mjs",
+    "license:check": "node scripts/release/generate-third-party-notices.mjs --check",
     "tauri": "tauri",
-    "check": "pnpm lint && pnpm format:check && pnpm test:run && pnpm build"
+    "check": "pnpm lint && pnpm format:check && pnpm test:run && pnpm test:release && pnpm license:check && pnpm build"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",

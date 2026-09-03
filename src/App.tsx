@@ -126,6 +126,8 @@ function AppContent() {
       ...([
         "WAREHOUSE_LOCKED",
         "COPY_RECOVERY_REQUIRED",
+        "DOCUMENT_RENAME_RECOVERY",
+        "DOCUMENT_TRASH_RECOVERY",
         "FILE_OPERATION_FAILED",
         "FILE_MISSING",
         "FILE_BUSY",
@@ -569,6 +571,7 @@ function AppContent() {
                   initialCreateOpen={currentDestination?.create}
                   onError={reportError}
                   scope="active"
+                  onRecycle={() => void navigate("recycle")}
                   writable={!busy && warehouse!.accessMode === "write"}
                 />
               ) : page === "archive" ? (
@@ -577,6 +580,7 @@ function AppContent() {
                   drilldown={currentDestination?.drilldown}
                   onError={reportError}
                   scope="archived"
+                  onRecycle={() => void navigate("recycle")}
                   writable={!busy && warehouse!.accessMode === "write"}
                 />
               ) : page === "templates" ? (

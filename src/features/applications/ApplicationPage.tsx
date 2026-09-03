@@ -23,12 +23,14 @@ import {
   rawValue,
   columnsWithFields,
   filterAndSort,
-  pinnedOffsets,
 } from "./tableModel";
 import { DetailPanel } from "./DetailPanel";
+import { ApplicationGrid } from "./ApplicationGrid";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
 import { Modal } from "../../shared/Modal";
 import { ViewControls } from "../views/ViewControls";
+import { PresetViewControls } from "../views/PresetViewControls";
+import { presetConfiguration } from "../views/presets";
 import { UrlLink as LinkValue } from "../../shared/UrlLink";
 import { BatchDialog } from "../batch/BatchDialog";
 import { ExportDialog } from "../export/ExportDialog";
@@ -91,6 +93,7 @@ function Cell({
 }
 
 interface ApplicationPageProps {
+  onRecycle?: (() => void) | undefined;
   drilldown?: Drilldown | undefined;
   initialCreateOpen?: boolean | undefined;
   scope: Extract<ApplicationScope, "active" | "archived">;
@@ -104,6 +107,7 @@ export function ApplicationPage({
   scope,
   writable,
   onError,
+  onRecycle,
 }: ApplicationPageProps) {
   const { confirmLeave } = useDraftGuard();
   const [records, setRecords] = useState<ApplicationListItem[]>([]);
@@ -301,7 +305,6 @@ export function ApplicationPage({
   };
 
   const visibleColumns = columns.filter((column) => column.visible);
-  const offsets = pinnedOffsets(visibleColumns);
   const labels = {
     ...columnLabels,
     ...Object.fromEntries(
@@ -439,6 +442,29 @@ export function ApplicationPage({
           </div>
         )}
         <div className="record-toolbar">
+          <PresetViewControls
+            filter={filter}
+            sort={sort}
+            scoped={!!sourceScope}
+            disabled={loading || !!loadError || busy}
+            onRecycle={onRecycle}
+            onPreset={(id) => {
+              const preset = presetConfiguration(id);
+              if (!preset) return;
+              setFilter(preset.filter);
+              setSort(preset.sort);
+              setSourceScope(undefined);
+              setActiveViewId("");
+              setPage(1);
+            }}
+            onState={(businessState) => {
+              const next = { ...filter };
+              if (businessState) next.businessState = businessState;
+              else delete next.businessState;
+              setFilter(next);
+              setPage(1);
+            }}
+          />
           <input
             aria-label="搜索投递"
             onChange={(event) => {
@@ -708,107 +734,43 @@ export function ApplicationPage({
           </div>
         )}
 
-        <div className="table-scroll">
-          {grouped.map(([groupName, items]) => (
-            <div className="record-group" key={groupName || "all"}>
-              {group && (
-                <h3>
-                  {groupName} <small>{items.length}</small>
-                </h3>
-              )}
-              <table className="application-table">
-                <thead>
-                  <tr>
-                    {visibleColumns.map((column) => (
-                      <th
-                        key={column.key}
-                        onClick={() => toggleSort(column.key)}
-                        style={{
-                          minWidth: column.width,
-                          width: column.width,
-                          ...(column.pinned
-                            ? {
-                                position: "sticky",
-                                left: offsets.get(column.key),
-                                zIndex: 2,
-                              }
-                            : {}),
-                        }}
-                      >
-                        {labels[column.key]}{" "}
-                        {sort[0]?.key === column.key
-                          ? sort[0].direction === "asc"
-                            ? "↑"
-                            : "↓"
-                          : ""}
-                      </th>
-                    ))}
-                    <th>批量选择</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {items.map((record) => (
-                    <tr
-                      className={selectedId === record.id ? "selected" : ""}
-                      key={record.id}
-                      onClick={() => void select(record.id)}
-                    >
-                      {visibleColumns.map((column) => (
-                        <td
-                          key={column.key}
-                          style={{
-                            maxWidth: column.width,
-                            minWidth: column.width,
-                            ...(column.pinned
-                              ? {
-                                  position: "sticky",
-                                  left: offsets.get(column.key),
-                                }
-                              : {}),
-                          }}
-                        >
-                          <Cell
-                            column={column}
-                            record={record}
-                            onError={onError}
-                          />
-                        </td>
-                      ))}
-                      <td onClick={(event) => event.stopPropagation()}>
-                        <input
-                          type="checkbox"
-                          aria-label={`选择投递 ${record.companyName} ${record.positionName}`}
-                          checked={checked.some((r) => r.id === record.id)}
-                          disabled={busy}
-                          onChange={(event) => {
-                            if (!event.target.checked)
-                              setChecked(
-                                checked.filter((r) => r.id !== record.id),
-                              );
-                            else if (checked.length < 200)
-                              setChecked([
-                                ...checked,
-                                { id: record.id, revision: record.revision },
-                              ]);
-                            else
-                              onError(
-                                new Error(
-                                  "每批最多 200 条，请先清除部分选择。",
-                                ),
-                              );
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              {!loading && !loadError && !items.length && (
-                <div className="table-empty">没有符合当前条件的投递记录。</div>
-              )}
-            </div>
-          ))}
-        </div>
+        <ApplicationGrid
+          grouped={grouped}
+          grouping={!!group}
+          columns={visibleColumns}
+          labels={labels}
+          sort={sort}
+          fields={fields}
+          selectedId={selectedId}
+          checked={checked}
+          writable={writable}
+          disabled={busy || loading || !!loadError}
+          empty={!loading && !loadError}
+          onSort={toggleSort}
+          onOpen={(id) => void select(id)}
+          onBeforeEdit={async () => {
+            if (!(await confirmLeave())) return false;
+            selectionRequest.current += 1;
+            selectedRef.current = null;
+            setSelectedId(null);
+            setDetail(null);
+            return true;
+          }}
+          onUpdated={(record) => {
+            setRecords((current) =>
+              current.map((item) =>
+                item.id === record.id && item.revision <= record.revision
+                  ? record
+                  : item,
+              ),
+            );
+          }}
+          onChecked={setChecked}
+          onError={onError}
+          renderCell={(record, column) => (
+            <Cell record={record} column={column} onError={onError} />
+          )}
+        />
         <div className="pagination">
           <span>
             {loading || loadError

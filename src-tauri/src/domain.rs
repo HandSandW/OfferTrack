@@ -160,6 +160,8 @@ pub struct ApplicationListItem {
     pub folder_normalization_pending: bool,
     pub current_stage_id: Option<String>,
     pub current_stage_name: String,
+    pub current_stage_key: Option<String>,
+    pub current_stage_terminal: bool,
     pub current_stage_state: String,
     pub current_state_name: String,
     pub current_state_kind: Option<String>,

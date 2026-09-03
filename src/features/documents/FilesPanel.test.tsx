@@ -39,6 +39,10 @@ const show = (writable = true, record: ApplicationDetail = detail) =>
     { wrapper: DraftGuardProvider },
   );
 beforeEach(() => {
+  vi.spyOn(desktopApi, "listApplicationDirectories").mockResolvedValue({
+    version: 1,
+    directories: [],
+  });
   vi.spyOn(desktopApi, "inspectApplicationFiles").mockResolvedValue({
     state: "available",
     relativePath: detail.folderRelativePath,
@@ -52,6 +56,63 @@ afterEach(() => {
 });
 
 describe("file health feedback", () => {
+  it("shows empty folders in read-only mode and keeps file indexes when directory enumeration fails", async () => {
+    vi.mocked(desktopApi.listApplicationDirectories)
+      .mockRejectedValueOnce(new Error("子目录占用"))
+      .mockResolvedValueOnce({
+        version: 1,
+        directories: [{ relativePath: "空目录", empty: true }],
+      });
+    show(false);
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "附件索引仍保留",
+    );
+    expect(screen.getByText("resume.pdf")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "检查目录" }));
+    await screen.findByText("（空目录）");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "重新扫描" })).toBeDisabled();
+  });
+  it("saves rename via IDs and refreshes the current detail", async () => {
+    const record = {
+      ...detail,
+      documents: detail.documents.map((doc) => ({ ...doc, missing: false })),
+    };
+    const updated = {
+      ...record,
+      documents: record.documents.map((doc) => ({
+        ...doc,
+        relativePath: "new.pdf",
+        displayName: "new.pdf",
+      })),
+    };
+    const save = vi
+      .spyOn(desktopApi, "renameDocument")
+      .mockResolvedValue(updated);
+    vi.spyOn(desktopApi, "availableBrowsers").mockResolvedValue([]);
+    show(true, record);
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "resume.pdf 更多操作" }),
+      ).toBeEnabled(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "resume.pdf 更多操作" }),
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "重命名…" }));
+    fireEvent.change(screen.getByLabelText("文件名称"), {
+      target: { value: "new.pdf" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存名称" }));
+    await screen.findByText(/附件已重命名/);
+    expect(onChange).toHaveBeenCalledWith(updated);
+    expect(save).toHaveBeenCalledWith({
+      applicationId: detail.id,
+      documentId: "doc",
+      expectedRelativePath: "resume.pdf",
+      newName: "new.pdf",
+    });
+  });
   it("shows missing folders and old missing indexes without inventing an empty directory", async () => {
     vi.mocked(desktopApi.inspectApplicationFiles).mockResolvedValue({
       state: "missing",

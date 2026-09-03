@@ -315,7 +315,10 @@ mod tests {
                 .collect()
             );
             assert_eq!(value["persistentApplicationLog"], false);
-            assert_eq!(value["supportedSchema"], 9);
+            assert_eq!(
+                value["supportedSchema"],
+                crate::migrations::CURRENT_SCHEMA_VERSION
+            );
         }
     }
 

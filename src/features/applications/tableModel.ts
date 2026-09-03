@@ -6,6 +6,7 @@ import type {
   FilterState,
   SortRule,
 } from "../../contracts";
+import { matchesBusinessState } from "../views/presets";
 
 export const companyTypes = [
   ["stateOwned", "央国企"],
@@ -170,6 +171,7 @@ export function filterAndSort(
         .join(" ")
         .toLocaleLowerCase();
       return (
+        matchesBusinessState(record, filter.businessState) &&
         (!search || text.includes(search)) &&
         (!filter.companyTypes.length ||
           filter.companyTypes.includes(record.companyType)) &&
@@ -181,8 +183,13 @@ export function filterAndSort(
       for (const rule of sort) {
         const a = rawValue(left, rule.key);
         const b = rawValue(right, rule.key);
-        const comparison =
-          typeof a === "number" && typeof b === "number"
+        const comparison = [
+          "createdAtUtc",
+          "updatedAtUtc",
+          "statusUpdatedAtUtc",
+        ].includes(rule.key)
+          ? (Date.parse(String(a)) || 0) - (Date.parse(String(b)) || 0)
+          : typeof a === "number" && typeof b === "number"
             ? a - b
             : String(a ?? "").localeCompare(String(b ?? ""), "zh-CN", {
                 numeric: true,

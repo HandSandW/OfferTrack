@@ -1,9 +1,15 @@
-use std::{collections::BTreeMap, ffi::OsStr, path::Path};
+use std::{
+    collections::{BTreeMap, HashMap},
+    ffi::OsStr,
+    path::Path,
+};
 
 use chrono::{Local, NaiveDate, SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use uuid::Uuid;
+
+pub mod cell_edit;
 
 use crate::{
     auxiliary_states::{self, Owner},
@@ -44,15 +50,21 @@ pub fn list(
                 COALESCE(s.display_order, 0), COALESCE(s.color, '#64748b'),
                 a.status_updated_at_utc, a.updated_at_utc, a.archived_at_utc,
                 a.deleted_at_utc, a.revision,
-                (SELECT COUNT(*) FROM documents d
-                 WHERE d.application_id = a.id AND d.missing_at_utc IS NULL)
+                0,
+                s.stable_key, (COALESCE(s.is_terminal, 0)=1 OR a.current_stage_state='failed'),
+                COALESCE(w.display_name, a.current_stage_state), w.semantic_kind
          FROM applications a
          LEFT JOIN workflow_stages s ON s.id = a.current_stage_id
+         LEFT JOIN workflow_states w
+           ON w.application_id = a.id AND w.stable_key = a.current_stage_state
          WHERE {condition}
          ORDER BY a.created_at_utc DESC"
     );
-    let connection = session.connection();
-    let mut statement = connection
+    let transaction = session
+        .connection()
+        .unchecked_transaction()
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    let mut statement = transaction
         .prepare(&sql)
         .map_err(|_| CoreError::DatabaseInvalid)?;
     let rows = statement
@@ -62,22 +74,157 @@ pub fn list(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| CoreError::DatabaseInvalid)?;
     drop(statement);
-    for record in &mut records {
-        (record.current_state_name, record.current_state_kind) =
-            auxiliary_states::describe(connection, &record.id, &record.current_stage_state)?;
+    hydrate_list_records(&transaction, condition, &mut records)?;
+    transaction
+        .commit()
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    Ok(records)
+}
+
+/// Hydrate a whole list with a fixed number of set-based queries. Keeping this
+/// out of the row loop avoids five extra SQLite statements per application.
+fn hydrate_list_records(
+    connection: &Connection,
+    condition: &str,
+    records: &mut [ApplicationListItem],
+) -> Result<(), CoreError> {
+    let by_id = records
+        .iter()
+        .enumerate()
+        .map(|(index, record)| (record.id.clone(), index))
+        .collect::<HashMap<_, _>>();
+    if by_id.is_empty() {
+        return Ok(());
+    }
+
+    let mut stages_by_application: HashMap<String, Vec<WorkflowStage>> = HashMap::new();
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT s.application_id, s.id, s.stable_key, s.display_name, s.stage_kind,
+                    s.display_order, s.color, s.is_terminal, s.terminal_outcome
+             FROM workflow_stages s
+             JOIN applications a ON a.id = s.application_id
+             WHERE {condition}
+             ORDER BY s.application_id, s.display_order"
+        ))
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                WorkflowStage {
+                    id: row.get(1)?,
+                    stable_key: row.get(2)?,
+                    display_name: row.get(3)?,
+                    stage_kind: row.get(4)?,
+                    display_order: row.get(5)?,
+                    color: row.get(6)?,
+                    is_terminal: row.get::<_, i64>(7)? != 0,
+                    terminal_outcome: row.get(8)?,
+                },
+            ))
+        })
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (application_id, stage) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        stages_by_application
+            .entry(application_id)
+            .or_default()
+            .push(stage);
+    }
+    drop(statement);
+    for record in records.iter_mut() {
         record.current_stage_progress = workflows::progress(
-            &load_stages(connection, &record.id)?,
+            stages_by_application
+                .get(&record.id)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
             record.current_stage_id.as_deref(),
         );
-        record.tags = load_tags(connection, &record.id)?;
-        record.custom_fields = load_custom_fields(connection, &record.id)?;
-        record.document_names = load_documents(connection, &record.id)?
-            .into_iter()
-            .filter(|document| !document.missing)
-            .map(|document| document.display_name)
-            .collect();
     }
-    Ok(records)
+
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT at.application_id, t.id, t.name, t.color, t.scope
+             FROM application_tags at
+             JOIN tags t ON t.id = at.tag_id
+             JOIN applications a ON a.id = at.application_id
+             WHERE {condition}
+             ORDER BY at.application_id, at.display_order, t.name"
+        ))
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                Tag {
+                    id: row.get(1)?,
+                    name: row.get(2)?,
+                    color: row.get(3)?,
+                    scope: row.get(4)?,
+                },
+            ))
+        })
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (application_id, tag) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        if let Some(index) = by_id.get(&application_id) {
+            records[*index].tags.push(tag);
+        }
+    }
+    drop(statement);
+
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT f.application_id, f.field_definition_id, f.value_json
+             FROM field_values f
+             JOIN applications a ON a.id = f.application_id
+             WHERE {condition}
+             ORDER BY f.application_id, f.field_definition_id"
+        ))
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (application_id, field_id, json) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        if let Some(index) = by_id.get(&application_id) {
+            records[*index].custom_fields.insert(
+                field_id,
+                serde_json::from_str(&json).map_err(|_| CoreError::DatabaseInvalid)?,
+            );
+        }
+    }
+    drop(statement);
+
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT d.application_id, d.display_name
+             FROM documents d
+             JOIN applications a ON a.id = d.application_id
+             WHERE {condition} AND d.missing_at_utc IS NULL
+             ORDER BY d.application_id, d.relative_path"
+        ))
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    for row in rows {
+        let (application_id, display_name) = row.map_err(|_| CoreError::DatabaseInvalid)?;
+        if let Some(index) = by_id.get(&application_id) {
+            records[*index].document_count += 1;
+            records[*index].document_names.push(display_name);
+        }
+    }
+    Ok(())
 }
 
 pub fn get(session: &WarehouseSession, id: &str) -> Result<ApplicationDetail, CoreError> {
@@ -110,9 +257,13 @@ pub(crate) fn load_record(
                     a.status_updated_at_utc, a.updated_at_utc, a.archived_at_utc,
                     a.deleted_at_utc, a.revision,
                     (SELECT COUNT(*) FROM documents d
-                     WHERE d.application_id = a.id AND d.missing_at_utc IS NULL)
+                     WHERE d.application_id = a.id AND d.missing_at_utc IS NULL),
+                    s.stable_key, (COALESCE(s.is_terminal, 0)=1 OR a.current_stage_state='failed'),
+                    COALESCE(w.display_name, a.current_stage_state), w.semantic_kind
              FROM applications a
              LEFT JOIN workflow_stages s ON s.id = a.current_stage_id
+             LEFT JOIN workflow_states w
+               ON w.application_id = a.id AND w.stable_key = a.current_stage_state
              WHERE a.id = ?1",
             [id],
             map_application_row,
@@ -158,9 +309,11 @@ fn map_application_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ApplicationL
         folder_normalization_pending: row.get::<_, i64>(17)? != 0,
         current_stage_id: row.get(18)?,
         current_stage_name: row.get(19)?,
+        current_stage_key: row.get(29)?,
+        current_stage_terminal: row.get(30)?,
         current_stage_state: row.get(20)?,
-        current_state_name: String::new(),
-        current_state_kind: None,
+        current_state_name: row.get(31)?,
+        current_state_kind: row.get(32)?,
         current_stage_order: row.get(21)?,
         current_stage_progress: 0,
         current_stage_color: row.get(22)?,
@@ -891,6 +1044,7 @@ pub fn scan_documents(
     application_id: &str,
 ) -> Result<Vec<DocumentEntry>, CoreError> {
     session.connection_mut()?;
+    crate::document_files::recover(session)?;
     let warehouse_root = session.root().to_path_buf();
     let folder_relative_path = session
         .connection()
@@ -2117,6 +2271,11 @@ mod tests {
         let detail = create(&mut session, request("示例公司", "开发工程师")).unwrap();
 
         assert_eq!(detail.record.current_stage_name, "准备投递");
+        assert_eq!(
+            detail.record.current_stage_key.as_deref(),
+            Some("preparing")
+        );
+        assert!(!detail.record.current_stage_terminal);
         assert_eq!(detail.record.current_stage_state, "pending");
         assert!(detail.record.application_date.is_none());
         assert!(
@@ -2471,6 +2630,14 @@ mod tests {
         );
         assert_eq!(failed.record.current_stage_state, "failed");
         assert_eq!(
+            failed.record.current_stage_key.as_deref(),
+            Some("interview")
+        );
+        assert!(failed.record.current_stage_terminal);
+        let listed = list(&session, ApplicationScope::Active).unwrap();
+        assert_eq!(listed[0].current_stage_key, failed.record.current_stage_key);
+        assert!(listed[0].current_stage_terminal);
+        assert_eq!(
             failed.record.current_stage_order,
             progressed.record.current_stage_order
         );
@@ -2486,6 +2653,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(accepted.record.current_stage_state, "completed");
+        assert_eq!(accepted.record.current_stage_key.as_deref(), Some("offer"));
+        assert!(accepted.record.current_stage_terminal);
     }
 
     #[test]

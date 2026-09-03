@@ -244,6 +244,14 @@ fn validate_view(request: &SavedViewRequest) -> Result<(), CoreError> {
     if !request.filter.get("search").is_some_and(Value::is_string) {
         return Err(CoreError::Validation);
     }
+    if let Some(state) = request.filter.get("businessState")
+        && !matches!(
+            state.as_str(),
+            Some("preparing" | "inProgress" | "awaitingResult" | "ended")
+        )
+    {
+        return Err(CoreError::Validation);
+    }
     for key in ["companyTypes", "stages"] {
         if !request
             .filter
