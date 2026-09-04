@@ -49,7 +49,7 @@ test("public text scanner rejects secrets and machine-specific user paths", () =
 });
 
 test("binary scanner detects UTF-8 and UTF-16 local build paths", () => {
-  const local = String.raw`C:\Users\developer\OfferTrack`;
+  const local = resolve("synthetic-build-user", "OfferTrack");
   scanBinaryForLocalPaths("safe", Buffer.from("MZ production"), [local]);
   assert.throws(
     () => scanBinaryForLocalPaths("utf8", Buffer.from(`MZ ${local}`), [local]),
@@ -67,15 +67,17 @@ test("binary scanner detects UTF-8 and UTF-16 local build paths", () => {
 });
 
 test("release Rust flags preserve encoded flags and remap local roots", () => {
+  const repository = resolve("synthetic-work-tree", "OfferTrack");
+  const userProfile = resolve("synthetic-build-user");
   const flags = releaseRustFlags(
-    String.raw`D:\work tree\OfferTrack`,
-    String.raw`C:\Users\developer`,
+    repository,
+    userProfile,
     "-Copt-level=3",
   ).split("\u001f");
   assert.deepEqual(flags, [
     "-Copt-level=3",
-    String.raw`--remap-path-prefix=D:\work tree\OfferTrack=/offertrack`,
-    String.raw`--remap-path-prefix=C:\Users\developer=/build-user`,
+    `--remap-path-prefix=${repository}=/offertrack`,
+    `--remap-path-prefix=${userProfile}=/build-user`,
   ]);
 });
 
