@@ -83,12 +83,16 @@ fn starts_with_case_insensitive(path: &Path, root: &Path) -> bool {
 #[cfg(windows)]
 fn is_network_location(path: &Path) -> bool {
     use std::os::windows::ffi::OsStrExt;
+    use std::path::{Component, Prefix};
     use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
     use windows_sys::Win32::System::WindowsProgramming::DRIVE_REMOTE;
 
-    let text = path.as_os_str().to_string_lossy();
-    if text.starts_with("\\\\") {
-        return true;
+    if let Some(Component::Prefix(prefix)) = path.components().next() {
+        match prefix.kind() {
+            Prefix::UNC(_, _) | Prefix::VerbatimUNC(_, _) => return true,
+            Prefix::Disk(_) | Prefix::VerbatimDisk(_) => {}
+            _ => return false,
+        }
     }
 
     let Some(root) = windows_drive_root(path) else {
@@ -159,6 +163,33 @@ mod tests {
         assert!(!starts_with_case_insensitive(
             Path::new(r"C:\Users\Ada\OneDriveElsewhere"),
             Path::new(r"C:\Users\Ada\OneDrive")
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn distinguishes_local_verbatim_paths_from_unc_paths() {
+        assert!(!matches!(
+            Path::new(r"\\?\D:\OfferTrack").components().next(),
+            Some(std::path::Component::Prefix(prefix))
+                if matches!(
+                    prefix.kind(),
+                    std::path::Prefix::UNC(_, _) | std::path::Prefix::VerbatimUNC(_, _)
+                )
+        ));
+        assert!(matches!(
+            Path::new(r"\\server\share\OfferTrack")
+                .components()
+                .next(),
+            Some(std::path::Component::Prefix(prefix))
+                if matches!(prefix.kind(), std::path::Prefix::UNC(_, _))
+        ));
+        assert!(matches!(
+            Path::new(r"\\?\UNC\server\share\OfferTrack")
+                .components()
+                .next(),
+            Some(std::path::Component::Prefix(prefix))
+                if matches!(prefix.kind(), std::path::Prefix::VerbatimUNC(_, _))
         ));
     }
 }

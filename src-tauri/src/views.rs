@@ -10,6 +10,30 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 use uuid::Uuid;
 
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+fn require_unique_name(
+    connection: &Connection,
+    name: &str,
+    excluding_id: Option<&str>,
+) -> Result<String, CoreError> {
+    let key = name_key(name);
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM views WHERE view_kind = 'applications' AND name_key = ?1 AND (?2 IS NULL OR id != ?2))",
+            params![key, excluding_id],
+            |row| row.get(0),
+        )
+        .map_err(|_| CoreError::DatabaseInvalid)?;
+    if exists {
+        Err(CoreError::DuplicateViewName)
+    } else {
+        Ok(key)
+    }
+}
+
 fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SavedView> {
     fn json(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Value> {
         let raw: String = row.get(index)?;
@@ -114,18 +138,23 @@ pub fn save(
         return Err(CoreError::Validation);
     }
     let id = request.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+    let key = require_unique_name(
+        &transaction,
+        &request.name,
+        existing.as_ref().map(|_| id.as_str()),
+    )?;
     if request.is_default {
         clear_old_default(&transaction, &id, &now)?;
     }
     if existing.is_some() {
-        transaction.execute("UPDATE views SET name = ?1, layout_json = ?2, sort_json = ?3, filter_json = ?4, group_json = ?5, is_default = ?6,
-            revision = revision + 1, updated_at_utc = ?7 WHERE id = ?8 AND view_kind = 'applications'",
-            params![request.name.trim(), request.layout.to_string(), request.sort.to_string(), request.filter.to_string(), request.group.map(|v| v.to_string()), request.is_default, now, id])
+        transaction.execute("UPDATE views SET name = ?1, name_key = ?2, layout_json = ?3, sort_json = ?4, filter_json = ?5, group_json = ?6, is_default = ?7,
+            revision = revision + 1, updated_at_utc = ?8 WHERE id = ?9 AND view_kind = 'applications'",
+            params![request.name.trim(), key, request.layout.to_string(), request.sort.to_string(), request.filter.to_string(), request.group.map(|v| v.to_string()), request.is_default, now, id])
             .map_err(|_| CoreError::DatabaseInvalid)?;
     } else {
-        transaction.execute("INSERT INTO views (id, name, view_kind, layout_json, sort_json, filter_json, group_json, is_default, created_at_utc, updated_at_utc)
-            VALUES (?1, ?2, 'applications', ?3, ?4, ?5, ?6, ?7, ?8, ?8)",
-            params![id, request.name.trim(), request.layout.to_string(), request.sort.to_string(), request.filter.to_string(), request.group.map(|v| v.to_string()), request.is_default, now])
+        transaction.execute("INSERT INTO views (id, name, name_key, view_kind, layout_json, sort_json, filter_json, group_json, is_default, created_at_utc, updated_at_utc)
+            VALUES (?1, ?2, ?3, 'applications', ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
+            params![id, request.name.trim(), key, request.layout.to_string(), request.sort.to_string(), request.filter.to_string(), request.group.map(|v| v.to_string()), request.is_default, now])
             .map_err(|_| CoreError::DatabaseInvalid)?;
     }
     // Validate the response inside the transaction: malformed existing metadata
@@ -148,11 +177,12 @@ pub fn metadata(
         .map_err(|_| CoreError::DatabaseInvalid)?;
     let source = get(&transaction, &request.id)?;
     require_revision(&source, request.revision)?;
+    let key = require_unique_name(&transaction, &request.name, Some(&request.id))?;
     if request.is_default {
         clear_old_default(&transaction, &request.id, &now)?;
     }
-    transaction.execute("UPDATE views SET name = ?1, is_default = ?2, updated_at_utc = ?3, revision = revision + 1 WHERE id = ?4 AND view_kind = 'applications'",
-        params![request.name.trim(), request.is_default, now, request.id]).map_err(|_| CoreError::DatabaseInvalid)?;
+    transaction.execute("UPDATE views SET name = ?1, name_key = ?2, is_default = ?3, updated_at_utc = ?4, revision = revision + 1 WHERE id = ?5 AND view_kind = 'applications'",
+        params![request.name.trim(), key, request.is_default, now, request.id]).map_err(|_| CoreError::DatabaseInvalid)?;
     let result = finish(&transaction, &request.id)?;
     transaction
         .commit()
@@ -175,9 +205,10 @@ pub fn duplicate(
     let source = get(&transaction, id)?;
     require_revision(&source, revision)?;
     validate_view(&as_request(&source))?;
-    transaction.execute("INSERT INTO views (id, name, view_kind, layout_json, sort_json, filter_json, group_json, is_default, created_at_utc, updated_at_utc)
-        SELECT ?1, ?2, view_kind, layout_json, sort_json, filter_json, group_json, 0, ?3, ?3 FROM views WHERE id = ?4 AND view_kind = 'applications'",
-        params![target, name.trim(), now, id]).map_err(|_| CoreError::DatabaseInvalid)?;
+    let key = require_unique_name(&transaction, name, None)?;
+    transaction.execute("INSERT INTO views (id, name, name_key, view_kind, layout_json, sort_json, filter_json, group_json, is_default, created_at_utc, updated_at_utc)
+        SELECT ?1, ?2, ?3, view_kind, layout_json, sort_json, filter_json, group_json, 0, ?4, ?4 FROM views WHERE id = ?5 AND view_kind = 'applications'",
+        params![target, name.trim(), key, now, id]).map_err(|_| CoreError::DatabaseInvalid)?;
     let result = finish(&transaction, &target)?;
     transaction
         .commit()

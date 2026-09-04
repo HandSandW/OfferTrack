@@ -34,6 +34,14 @@ export const PORTABLE_SOURCE_FILES = Object.freeze([
   ["THIRD_PARTY_NOTICES.md", "THIRD_PARTY_NOTICES.md", "text"],
   ["CHANGELOG.md", "CHANGELOG.md", "text"],
   ["SECURITY.md", "SECURITY.md", "text"],
+  ["docs/user-guide/README.md", "docs/user-guide/README.md", "text"],
+  ["docs/agent-api.md", "docs/agent-api.md", "text"],
+  ["docs/backup-format.md", "docs/backup-format.md", "text"],
+  [
+    "docs/assets/offertrack-slogan.png",
+    "docs/assets/offertrack-slogan.png",
+    "asset",
+  ],
 ]);
 
 const GENERATED_FILES = ["RELEASE-MANIFEST.json", "SHA256SUMS.txt"];
@@ -143,7 +151,7 @@ export function validateReleaseMetadata(metadata) {
     false,
     "Installer bundling must stay disabled",
   );
-  assert.equal(metadata.schemaVersion, 11, "Review schema version metadata");
+  assert.equal(metadata.schemaVersion, 12, "Review schema version metadata");
   assert.equal(metadata.warehouseFormatVersion, 1);
   assert.deepEqual(metadata.mainPermissions, [
     "core:default",
@@ -155,6 +163,12 @@ export function validateReleaseMetadata(metadata) {
     "core:event:allow-unlisten",
   ]);
   assert.deepEqual(metadata.helpWindows, ["help"]);
+  assert.deepEqual(metadata.detailPermissions, [
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-destroy",
+  ]);
+  assert.deepEqual(metadata.detailWindows, ["application-detail"]);
   assert(
     metadata.csp.includes("default-src 'self'"),
     "CSP must default to self",
@@ -176,11 +190,16 @@ export async function readReleaseMetadata(repositoryRoot) {
     warehouse,
     mainCapabilityText,
     helpCapabilityText,
+    detailCapabilityText,
     platform,
     help,
     recycle,
     archive,
     tools,
+    agentSnapshot,
+    detailWindow,
+    frontendEntry,
+    appRuntime,
   ] = await Promise.all([
     readFile(join(root, "package.json"), "utf8"),
     readFile(join(root, "src-tauri/tauri.conf.json"), "utf8"),
@@ -189,16 +208,25 @@ export async function readReleaseMetadata(repositoryRoot) {
     readFile(join(root, "src-tauri/src/warehouse.rs"), "utf8"),
     readFile(join(root, "src-tauri/capabilities/default.json"), "utf8"),
     readFile(join(root, "src-tauri/capabilities/help.json"), "utf8"),
+    readFile(join(root, "src-tauri/capabilities/detail.json"), "utf8"),
     readFile(join(root, "src-tauri/src/platform.rs"), "utf8"),
     readFile(join(root, "src-tauri/src/help.rs"), "utf8"),
     readFile(join(root, "src-tauri/src/recycle_bin.rs"), "utf8"),
     readFile(join(root, "src-tauri/src/backup_archive.rs"), "utf8"),
     readFile(join(root, "src-tauri/src/agent_mcp/tools.rs"), "utf8"),
+    readFile(join(root, "src-tauri/src/agent_access/snapshot.rs"), "utf8"),
+    readFile(join(root, "src-tauri/src/application_detail.rs"), "utf8"),
+    readFile(join(root, "src/main.tsx"), "utf8"),
+    readFile(join(root, "src-tauri/src/lib.rs"), "utf8"),
   ]);
   const packageJson = parseJson(packageText, "package.json");
   const tauriJson = parseJson(tauriText, "tauri.conf.json");
   const mainCapability = parseJson(mainCapabilityText, "default capability");
   const helpCapability = parseJson(helpCapabilityText, "help capability");
+  const detailCapability = parseJson(
+    detailCapabilityText,
+    "application detail capability",
+  );
   const toolBlock = capture(
     tools,
     /pub\(super\) const NAMES:[^=]+=[\s\S]*?\[([\s\S]*?)\];/,
@@ -221,15 +249,47 @@ export async function readReleaseMetadata(repositoryRoot) {
   );
   assert(help.includes('label == "help"'), "Missing help webview command gate");
   assert(
+    help.includes('label == "application-detail"'),
+    "Missing detail webview command gate",
+  );
+  assert(
     recycle.includes("enum TrashArea"),
     "Missing closed trash-area allowlist",
   );
-  assert(recycle.includes("Records,\n    Backups,\n    Documents,"));
+  assert(
+    recycle.includes(
+      "Records,\n    Backups,\n    Documents,\n    AgentSnapshots,",
+    ),
+  );
   assert(!recycle.includes("pub fn remove_tree_in_area"));
   assert(archive.includes("deny_unknown_fields"));
   assert(archive.includes("valid_path"));
   assert(archive.includes("payload_offset.checked_add(total_bytes)"));
   assert(!/offertrack_(?:delete|remove|trash|purge|clear)/.test(tools));
+  assert(
+    agentSnapshot.includes('relative_path: "agent-access/snapshot".into()'),
+    "Agent snapshot path is not fixed",
+  );
+  assert(
+    !agentSnapshot.includes("fn publish_current_pointer"),
+    "Legacy Agent current pointer publication returned",
+  );
+  assert(
+    detailWindow.includes(
+      'WebviewUrl::App("index.html?window=application-detail".into())',
+    ) &&
+      !detailWindow.includes(".visible(false)") &&
+      frontendEntry.includes('"application-detail"'),
+    "Detail window is not using the shared visible frontend entry",
+  );
+  assert(
+    appRuntime.includes("async fn set_application_detail_target(") &&
+      /async fn set_application_detail_target\([\s\S]*?tauri::async_runtime::spawn_blocking/.test(
+        appRuntime,
+      ) &&
+      !appRuntime.includes("fn application_detail_ready("),
+    "Detail window native operations must stay outside synchronous IPC handlers",
+  );
 
   const metadata = {
     packageVersion: packageJson.version,
@@ -264,6 +324,8 @@ export async function readReleaseMetadata(repositoryRoot) {
     mainPermissions: mainCapability.permissions,
     helpPermissions: helpCapability.permissions,
     helpWindows: helpCapability.windows,
+    detailPermissions: detailCapability.permissions,
+    detailWindows: detailCapability.windows,
     mcpTools,
   };
   validateReleaseMetadata(metadata);
@@ -273,8 +335,8 @@ export async function readReleaseMetadata(repositoryRoot) {
 export async function auditRepository(repositoryRoot) {
   const root = await realpath(resolve(repositoryRoot));
   const metadata = await readReleaseMetadata(root);
-  for (const [, publicName, kind] of PORTABLE_SOURCE_FILES) {
-    const source = join(root, publicName);
+  for (const [relativeSource, publicName, kind] of PORTABLE_SOURCE_FILES) {
+    const source = join(root, relativeSource);
     if (kind === "text") {
       const text = await readFile(source, "utf8");
       assert(text.trim().length > 100, `${publicName} is unexpectedly short`);
@@ -284,6 +346,43 @@ export async function auditRepository(repositoryRoot) {
   const license = await readFile(join(root, "LICENSE"), "utf8");
   assert(license.includes("MIT License"));
   assert(license.includes("Permission is hereby granted"));
+  const [
+    appIcon,
+    slogan,
+    nativeIcon,
+    readme,
+    mainHtml,
+    helpHtml,
+    app,
+    help,
+    buildScript,
+  ] = await Promise.all([
+    readFile(join(root, "public/app-icon.png")),
+    readFile(join(root, "docs/assets/offertrack-slogan.png")),
+    readFile(join(root, "src-tauri/icons/icon.ico")),
+    readFile(join(root, "README.md"), "utf8"),
+    readFile(join(root, "index.html"), "utf8"),
+    readFile(join(root, "help.html"), "utf8"),
+    readFile(join(root, "src/App.tsx"), "utf8"),
+    readFile(join(root, "src/features/help/HelpWindow.tsx"), "utf8"),
+    readFile(join(root, "src-tauri/build.rs"), "utf8"),
+  ]);
+  assert.equal(appIcon.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert.equal(appIcon.readUInt32BE(16), 1024, "App icon width changed");
+  assert.equal(appIcon.readUInt32BE(20), 1024, "App icon height changed");
+  assert.equal(slogan.subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+  assert(slogan.readUInt32BE(16) >= 720, "README slogan is too narrow");
+  assert(slogan.readUInt32BE(20) >= 720, "README slogan is too short");
+  assert.equal(nativeIcon.subarray(0, 4).toString("hex"), "00000100");
+  assert(nativeIcon.readUInt16LE(4) > 0, "Windows icon has no images");
+  assert(readme.includes("docs/assets/offertrack-slogan.png"));
+  for (const source of [mainHtml, helpHtml, app, help]) {
+    assert(source.includes("/app-icon.png"), "A UI entry lost the app icon");
+  }
+  assert(
+    buildScript.includes("cargo:rerun-if-changed=icons/icon.ico"),
+    "Cargo does not rebuild Windows resources after an icon change",
+  );
   return metadata;
 }
 
@@ -302,6 +401,41 @@ async function verifyPe(path, label, localPaths = []) {
     await file.close();
   }
   scanBinaryForLocalPaths(label, await readFile(path), localPaths);
+}
+
+async function verifyPng(path, label) {
+  const value = await readFile(path);
+  assert(value.length >= 24, `${label} is too short to be a PNG`);
+  assert.equal(
+    value.subarray(0, 8).toString("hex"),
+    "89504e470d0a1a0a",
+    `${label} is not a PNG file`,
+  );
+  assert(value.readUInt32BE(16) > 0, `${label} has an invalid width`);
+  assert(value.readUInt32BE(20) > 0, `${label} has an invalid height`);
+}
+
+async function listPortableEntries(root) {
+  const files = [];
+  const directories = [];
+  async function visit(current) {
+    const entries = await readdir(current, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = join(current, entry.name);
+      const info = await lstat(path);
+      assert(!info.isSymbolicLink(), "Portable package contains a link");
+      const name = relative(root, path).replaceAll("\\", "/");
+      if (info.isDirectory()) {
+        directories.push(name);
+        await visit(path);
+      } else {
+        assert(info.isFile(), "Portable package contains a special file");
+        files.push(name);
+      }
+    }
+  }
+  await visit(root);
+  return { files: files.sort(), directories: directories.sort() };
 }
 
 async function assertSafeOutputParent(repositoryRoot, outputParent) {
@@ -358,8 +492,13 @@ export async function assemblePortableDirectory({
     assert(sourceInfo.isFile(), `${relativeSource} is not a file`);
     if (kind === "binary") {
       await verifyPe(source, publicName, [root, process.env.USERPROFILE]);
-    } else scanPublicText(publicName, await readFile(source, "utf8"));
+    } else if (kind === "text") {
+      scanPublicText(publicName, await readFile(source, "utf8"));
+    } else {
+      await verifyPng(source, publicName);
+    }
     const target = join(candidate, publicName);
+    await mkdir(dirname(target), { recursive: true });
     await copyExclusive(source, target);
     const copiedInfo = await stat(target);
     files.push({
@@ -415,12 +554,10 @@ export async function auditPortableDirectory(candidateDirectory, metadata) {
     ...PORTABLE_SOURCE_FILES.map(([, name]) => name),
     ...GENERATED_FILES,
   ].sort();
-  const entries = await readdir(candidate, { withFileTypes: true });
-  assert(
-    entries.every((entry) => entry.isFile()),
-    "Portable package contains a directory or link",
-  );
-  assert.deepEqual(entries.map((entry) => entry.name).sort(), expected);
+  const expectedDirectories = ["docs", "docs/assets", "docs/user-guide"];
+  const entries = await listPortableEntries(candidate);
+  assert.deepEqual(entries.files, expected);
+  assert.deepEqual(entries.directories, expectedDirectories);
 
   const manifest = parseJson(
     await readFile(join(candidate, GENERATED_FILES[0]), "utf8"),
@@ -462,7 +599,8 @@ export async function auditPortableDirectory(candidateDirectory, metadata) {
   for (const [, name, kind] of PORTABLE_SOURCE_FILES) {
     if (kind === "text")
       scanPublicText(name, await readFile(join(candidate, name), "utf8"));
-    else await verifyPe(join(candidate, name), name);
+    else if (kind === "binary") await verifyPe(join(candidate, name), name);
+    else await verifyPng(join(candidate, name), name);
   }
 }
 

@@ -64,6 +64,9 @@ pub(crate) fn require_state(
     application: &str,
     key: &str,
 ) -> Result<(), CoreError> {
+    if key.is_empty() {
+        return Ok(());
+    }
     let valid: bool = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM workflow_states WHERE application_id = ?1 AND stable_key = ?2)",
         params![application, key], |row| row.get(0),
@@ -80,6 +83,9 @@ pub(crate) fn describe(
     application: &str,
     key: &str,
 ) -> Result<(String, Option<String>), CoreError> {
+    if key.is_empty() {
+        return Ok((String::new(), None));
+    }
     Ok(connection.query_row("SELECT display_name, semantic_kind FROM workflow_states WHERE application_id = ?1 AND stable_key = ?2",
         params![application, key], |row| Ok((row.get(0)?, Some(row.get(1)?))))
         .optional().map_err(|_| CoreError::DatabaseInvalid)?.unwrap_or_else(|| (key.into(), None)))
@@ -360,19 +366,19 @@ mod tests {
         edit.states[0].display_name = "准备启动".into();
         edit.states.swap(0, 2);
         let edited = update_record(&mut session, edit.clone()).unwrap();
-        assert_eq!(edited.record.current_state_name, "准备启动");
+        assert_eq!(edited.record.current_state_name, "");
         assert_eq!(
             edited.record.status_updated_at_utc,
             first.record.status_updated_at_utc
         );
-        assert_eq!(edited.history[0].next_state_name_snapshot, "尚未开始");
+        assert_eq!(edited.history[0].next_state_name_snapshot, "");
         assert_eq!(edited.auxiliary_states[0].stable_key, "awaitingCompletion");
         assert_eq!(
             applications::get(&session, &other.record.id)
                 .unwrap()
                 .record
                 .current_state_name,
-            "尚未开始"
+            ""
         );
         assert!(matches!(
             update_record(&mut session, edit),
@@ -385,10 +391,7 @@ mod tests {
             waiting.record.current_state_kind.as_deref(),
             Some("awaitingResult")
         );
-        assert_eq!(
-            waiting.history[0].previous_state_name_snapshot.as_deref(),
-            Some("准备启动")
-        );
+        assert_eq!(waiting.history[0].previous_state_name_snapshot, None);
         assert_eq!(waiting.history[0].next_state_name_snapshot, "等待主管反馈");
         assert_eq!(
             waiting.history[0].next_state_kind_snapshot.as_deref(),
@@ -523,7 +526,7 @@ mod tests {
             assert_eq!(states.last().unwrap().stable_key, original.stable_key);
             assert!(ids.insert(states.last().unwrap().id.clone()));
         }
-        assert_eq!(copied.record.current_stage_state, "pending");
+        assert_eq!(copied.record.current_stage_state, "");
         let mut edit = edits(
             template_id,
             template.template.revision,
@@ -652,7 +655,7 @@ mod tests {
                 .unwrap()
                 .record
                 .current_state_name,
-            "尚未开始"
+            ""
         );
         session.connection().execute_batch("DROP TRIGGER fail_state_revision; CREATE TRIGGER fail_state_snapshot BEFORE UPDATE OF next_state_name_snapshot ON workflow_events BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
         assert!(transition(&mut session, &first, "applied", "awaitingResult").is_err());

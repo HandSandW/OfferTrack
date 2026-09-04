@@ -66,6 +66,9 @@ export function DocumentTree({
         .map((file) => (
           <li key={file.id}>
             <article
+              onDoubleClick={() => {
+                if (!disabled) open(file);
+              }}
               onContextMenu={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -76,11 +79,17 @@ export function DocumentTree({
               <div>
                 <strong
                   tabIndex={disabled ? -1 : 0}
-                  onDoubleClick={() => {
-                    if (!disabled) open(file);
-                  }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" && !disabled) open(file);
+                    if (
+                      !disabled &&
+                      (event.key === "ContextMenu" ||
+                        (event.shiftKey && event.key === "F10"))
+                    ) {
+                      event.preventDefault();
+                      const box = event.currentTarget.getBoundingClientRect();
+                      setMenu({ x: box.left, y: box.bottom, file });
+                    }
                   }}
                 >
                   {file.displayName}
@@ -97,33 +106,6 @@ export function DocumentTree({
                   </span>
                 )}
               </div>
-              <div>
-                <button disabled={disabled} onClick={() => open(file)}>
-                  打开
-                </button>
-                <button
-                  disabled={disabled}
-                  onClick={() => open(file, "chooseOther")}
-                >
-                  选择其他应用
-                </button>
-                <button disabled={disabled} onClick={() => reveal(file)}>
-                  所在文件夹
-                </button>
-                <button disabled={disabled} onClick={() => copy(file)}>
-                  复制路径
-                </button>
-                <button
-                  disabled={disabled}
-                  aria-label={`${file.displayName} 更多操作`}
-                  onClick={(event) => {
-                    const box = event.currentTarget.getBoundingClientRect();
-                    setMenu({ x: box.left, y: box.bottom, file });
-                  }}
-                >
-                  更多
-                </button>
-              </div>
             </article>
           </li>
         ))}
@@ -131,6 +113,9 @@ export function DocumentTree({
   );
   return (
     <div className="document-list document-tree">
+      <p className="muted document-tree-hint">
+        双击或按 Enter 使用默认应用打开；右键或按 Shift+F10 查看完整操作。
+      </p>
       {renderBranch(documentTree(documents, directories))}
       {menu && !disabled && (
         <OpenMenu

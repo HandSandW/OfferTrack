@@ -1,4 +1,5 @@
 import type { Task } from "./contracts";
+import { formatOptionalLocalDateTime } from "../../shared/dateTime";
 export function taskGroup(task: Task, now: Date): string {
   if (task.completedAtUtc) return "已完成";
   if (!task.dueAtUtc) return "无日期";
@@ -39,4 +40,4 @@ export function scheduleGroup(
 export const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "读取或保存失败，请重试。";
 export const dateTime = (value: string | null) =>
-  value ? new Date(value).toLocaleString() : "未设置";
+  formatOptionalLocalDateTime(value);

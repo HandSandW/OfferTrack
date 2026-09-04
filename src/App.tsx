@@ -32,14 +32,14 @@ import {
 } from "./features/management/PhaseTwoPages";
 
 const pages = [
-  { id: "overview", label: "概览", phase: 1 },
-  { id: "applications", label: "投递记录", phase: 2 },
-  { id: "tasks", label: "待办与日程", phase: 3 },
-  { id: "templates", label: "流程模板", phase: 2 },
-  { id: "archive", label: "已归档", phase: 2 },
-  { id: "recycle", label: "回收站", phase: 2 },
-  { id: "settings", label: "设置", phase: 1 },
-  { id: "help", label: "帮助", phase: 1 },
+  { id: "overview", label: "概览" },
+  { id: "applications", label: "投递记录" },
+  { id: "tasks", label: "待办与日程" },
+  { id: "templates", label: "流程模板" },
+  { id: "archive", label: "已归档" },
+  { id: "recycle", label: "回收站" },
+  { id: "settings", label: "设置" },
+  { id: "help", label: "帮助" },
 ] as const;
 
 type PageId = (typeof pages)[number]["id"];
@@ -306,6 +306,10 @@ function AppContent() {
       }
     };
     window.addEventListener("keydown", keydown);
+    const detailChanged = listen("application-detail-changed", () => {
+      window.dispatchEvent(new Event("offertrack-data-changed"));
+      window.dispatchEvent(new Event("offertrack-snapshot-dirty"));
+    });
     const unlisten = listen("help-open-failed", () =>
       setNotice({
         kind: "error",
@@ -325,6 +329,10 @@ function AppContent() {
         () => undefined,
       );
       void stopLogs.then(
+        (stop) => stop(),
+        () => undefined,
+      );
+      void detailChanged.then(
         (stop) => stop(),
         () => undefined,
       );
@@ -362,9 +370,12 @@ function AppContent() {
         <div className="app-shell">
           <aside className="sidebar">
             <div className="brand">
-              <span className="brand-mark" aria-hidden="true">
-                O
-              </span>
+              <img
+                className="brand-mark"
+                src="/app-icon.png"
+                alt=""
+                aria-hidden="true"
+              />
               <div>
                 <strong>OfferTrack</strong>
                 <span>离线求职管理</span>
@@ -380,7 +391,6 @@ function AppContent() {
                   type="button"
                 >
                   <span>{item.label}</span>
-                  {item.phase > 1 && <small>阶段 {item.phase}</small>}
                 </button>
               ))}
             </nav>
@@ -599,11 +609,7 @@ function AppContent() {
                 <section className="placeholder">
                   <p className="eyebrow">功能边界</p>
                   <h2>{selectedPage.label}</h2>
-                  <p>
-                    {selectedPage.phase === 1
-                      ? "阶段 1 已建立此页面入口；具体设置项会随对应功能分阶段接入。"
-                      : `该业务功能计划在阶段 ${selectedPage.phase} 实现，本阶段不提前加入占位数据。`}
-                  </p>
+                  <p>当前页面暂时不可用，请返回其他页面或重新打开应用。</p>
                 </section>
               )}
             </div>

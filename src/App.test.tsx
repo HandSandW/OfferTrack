@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   listFieldDefinitions: vi.fn(),
   listApplicationViews: vi.fn(),
   getApplicationPageSize: vi.fn(),
+  setApplicationDetailTarget: vi.fn(),
   listUnlinkedFolders: vi.fn(),
   migrateWarehouse: vi.fn(),
   selectDirectory: vi.fn(),
@@ -59,6 +60,7 @@ vi.mock("./lib/tauri", async () => {
       listFieldDefinitions: mocks.listFieldDefinitions,
       listApplicationViews: mocks.listApplicationViews,
       getApplicationPageSize: mocks.getApplicationPageSize,
+      setApplicationDetailTarget: mocks.setApplicationDetailTarget,
       listUnlinkedFolders: mocks.listUnlinkedFolders,
       migrateWarehouse: mocks.migrateWarehouse,
       previewExternalDatabaseBackup: mocks.previewExternalDatabaseBackup,
@@ -91,6 +93,19 @@ describe("OfferTrack app shell", () => {
     mocks.getOverview.mockResolvedValue(
       overviewFixture({
         dueMetrics: [{ label: "已逾期事项", keys: ["event:one"] }],
+        reminders: [
+          {
+            key: "event:one:overdue",
+            fingerprint: "verified",
+            ruleKey: "overdue",
+            sourceKind: "event",
+            sourceId: "one",
+            applicationId: null,
+            label: "逾期笔试",
+            reason: "招聘事件已经逾期",
+            severity: "overdue",
+          },
+        ],
         schedule: [
           {
             key: "event:one",
@@ -118,6 +133,10 @@ describe("OfferTrack app shell", () => {
       }),
     );
     render(<App />);
+    expect(document.querySelector(".brand-mark")).toHaveAttribute(
+      "src",
+      "/app-icon.png",
+    );
     // Wait for the shared provider before the relatively costly accessible-role query.
     await waitFor(() => expect(mocks.getOverview).toHaveBeenCalled());
     await waitFor(() =>
@@ -131,7 +150,7 @@ describe("OfferTrack app shell", () => {
     expect(screen.getByLabelText("应用内提醒")).toBeInTheDocument();
     fireEvent.click(screen.getByText("清除日程范围"));
     await screen.findByText("范围外事件");
-    fireEvent.click(screen.getByRole("button", { name: "查看重要提醒（0）" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看重要提醒（1）" }));
     await screen.findByRole("heading", { name: "求职概览" });
     expect(screen.queryByLabelText("应用内提醒")).not.toBeInTheDocument();
   });
@@ -193,7 +212,7 @@ describe("OfferTrack app shell", () => {
         await screen.findByRole("button", { name: "准备投递 1" }),
       );
       await screen.findByText("该投递已不在当前分区，请刷新概览后重试。");
-      expect(mocks.getApplication).toHaveBeenCalledWith("stale");
+      expect(mocks.setApplicationDetailTarget).not.toHaveBeenCalled();
       expect(screen.queryByLabelText("关闭详情")).not.toBeInTheDocument();
       expect(screen.queryByText("示例公司")).not.toBeInTheDocument();
       expect(screen.getByText("清除概览范围")).toBeEnabled();
@@ -257,6 +276,7 @@ describe("OfferTrack app shell", () => {
     mocks.listFieldDefinitions.mockResolvedValue([]);
     mocks.listApplicationViews.mockResolvedValue([]);
     mocks.getApplicationPageSize.mockResolvedValue(50);
+    mocks.setApplicationDetailTarget.mockResolvedValue(undefined);
     mocks.listUnlinkedFolders.mockResolvedValue([]);
     mocks.listWorkflowTemplates.mockResolvedValue([workflowFixture()]);
     mocks.getWorkflowTemplate.mockResolvedValue(workflowFixture());
@@ -289,8 +309,9 @@ describe("OfferTrack app shell", () => {
     render(<App />);
     await screen.findByText("synthetic-help-directory");
     fireEvent.click(screen.getByRole("button", { name: /投递记录/ }));
-    fireEvent.click(await screen.findByText("示例公司"));
-    const company = await screen.findByLabelText("岗位名称");
+    await screen.findByText("示例公司");
+    fireEvent.click(await screen.findByRole("button", { name: "新建投递" }));
+    const company = await screen.findByLabelText("公司名称");
     fireEvent.change(company, { target: { value: "未保存的公司" } });
     fireEvent.keyDown(window, { key: "F1" });
     await waitFor(() => expect(mocks.openHelp).toHaveBeenCalledWith());
@@ -467,7 +488,7 @@ describe("OfferTrack app shell", () => {
     );
   });
 
-  it("guards page navigation and warehouse closing with an unsaved detail", async () => {
+  it("guards page navigation and warehouse closing with an unsaved new record", async () => {
     mocks.getStartupState.mockResolvedValue({
       rememberedWarehousePath: null,
       activeWarehouse: {
@@ -486,7 +507,8 @@ describe("OfferTrack app shell", () => {
       expect(screen.getByRole("button", { name: "打开仓库" })).toBeEnabled(),
     );
     fireEvent.click(screen.getByRole("button", { name: /投递记录/ }));
-    fireEvent.click(await screen.findByText("示例公司"));
+    await screen.findByText("示例公司");
+    fireEvent.click(await screen.findByRole("button", { name: "新建投递" }));
     fireEvent.change(await screen.findByLabelText("岗位名称"), {
       target: { value: "未保存的岗位" },
     });

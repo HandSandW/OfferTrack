@@ -8,6 +8,9 @@ import { WorkflowPanel } from "./WorkflowPanel";
 import { FilesPanel } from "../documents/FilesPanel";
 import { applicationDraft } from "./editorModel";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
+import { formatLocalDateTime } from "../../shared/dateTime";
+
+export type DetailTab = "basic" | "workflow" | "files" | "history";
 
 export function DetailPanel({
   detail,
@@ -16,6 +19,9 @@ export function DetailPanel({
   onError,
   scope,
   writable,
+  initialTab = "basic",
+  onTabChange,
+  operationError = "",
 }: {
   detail: ApplicationDetail;
   fields: FieldDefinition[];
@@ -23,11 +29,12 @@ export function DetailPanel({
   onError: (error: unknown) => void;
   scope: "active" | "archived";
   writable: boolean;
+  initialTab?: DetailTab;
+  onTabChange?: (tab: DetailTab) => void;
+  operationError?: string;
 }) {
   const [form, setForm] = useState(detail);
-  const [tab, setTab] = useState<"basic" | "workflow" | "files" | "history">(
-    "basic",
-  );
+  const [tab, setTab] = useState<DetailTab>(initialTab);
   const [busy, setBusy] = useState(false);
   const [operationLabel, setOperationLabel] = useState("");
   const [actionError, setActionError] = useState("");
@@ -156,6 +163,7 @@ export function DetailPanel({
         </div>
       )}
       {actionError && <p role="alert">{actionError}</p>}
+      {operationError && <p role="alert">{operationError}</p>}
       <nav className="detail-tabs">
         {(
           [
@@ -169,7 +177,11 @@ export function DetailPanel({
             className={tab === key ? "active" : ""}
             key={key}
             onClick={() => {
-              if (tab !== key) void leave(() => setTab(key));
+              if (tab !== key)
+                void leave(() => {
+                  setTab(key);
+                  onTabChange?.(key);
+                });
             }}
             type="button"
           >
@@ -364,7 +376,7 @@ export function DetailPanel({
           <div className="history-list">
             {form.history.map((event) => (
               <article key={event.id}>
-                <time>{new Date(event.occurredAtUtc).toLocaleString()}</time>
+                <time>{formatLocalDateTime(event.occurredAtUtc)}</time>
                 <strong>{event.stageNameSnapshot}</strong>
                 <span>
                   {event.previousStateNameSnapshot

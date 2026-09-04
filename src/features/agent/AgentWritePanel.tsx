@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { desktopApi } from "../../lib/tauri";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
+import { formatLocalDateTime } from "../../shared/dateTime";
 import type { AgentAuditItem, AgentPermission } from "./contracts";
 
 export function AgentWritePanel({
@@ -114,7 +115,7 @@ export function AgentWritePanel({
           <ul>
             {audit.map((item) => (
               <li key={item.id}>
-                {item.occurred_at_utc} ·{" "}
+                {formatLocalDateTime(item.occurred_at_utc)} ·{" "}
                 {item.operation === "permission" ? "权限设置" : "Agent 写入"} ·{" "}
                 {item.id}{" "}
                 <button

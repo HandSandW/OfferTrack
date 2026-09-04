@@ -15,6 +15,7 @@ use crate::{
 };
 
 const KEY: &str = "agent_snapshot_v1";
+const FIXED_RELATIVE_PATH: &str = "agent-access/snapshot";
 const META_LIMIT: usize = 16 * 1024;
 const FILES: [&str; 7] = [
     "applications.jsonl",
@@ -88,25 +89,31 @@ fn load(session: &WarehouseSession) -> Result<Option<Checkpoint>, CoreError> {
     }
     let checkpoint: Checkpoint =
         serde_json::from_str(&raw.ok_or(CoreError::MetadataInvalid)?).map_err(invalid)?;
-    let name = checkpoint
-        .snapshot
-        .relative_path
-        .strip_prefix("agent-access/")
-        .ok_or(CoreError::UnsafePath)?;
-    let suffix = name
-        .strip_prefix("snapshot-")
-        .ok_or(CoreError::UnsafePath)?;
-    if checkpoint.version != 1 {
+    let legacy_path_valid = || {
+        let Some(name) = checkpoint
+            .snapshot
+            .relative_path
+            .strip_prefix("agent-access/")
+        else {
+            return false;
+        };
+        let Some(suffix) = name.strip_prefix("snapshot-") else {
+            return false;
+        };
+        name.is_ascii()
+            && name.len() <= 120
+            && !name.contains(['/', '\\', ':'])
+            && suffix
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+            && suffix.len() >= 37
+            && uuid::Uuid::parse_str(&suffix[suffix.len() - 36..]).is_ok()
+    };
+    if !matches!(checkpoint.version, 1 | 2) {
         return Err(CoreError::AgentVersion);
     }
-    if !name.is_ascii()
-        || name.len() > 120
-        || name.contains(['/', '\\', ':'])
-        || !suffix
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        || suffix.len() < 37
-        || uuid::Uuid::parse_str(&suffix[suffix.len() - 36..]).is_err()
+    if !((checkpoint.version == 1 && legacy_path_valid())
+        || (checkpoint.version == 2 && checkpoint.snapshot.relative_path == FIXED_RELATIVE_PATH))
         || chrono::DateTime::parse_from_rfc3339(&checkpoint.snapshot.generated_at_utc).is_err()
         || ![
             &checkpoint.manifest_sha256,
@@ -131,7 +138,7 @@ pub(super) fn remember(
     // Validate before updating. Unknown future/corrupt metadata must never be silently overwritten.
     load(session)?;
     let checkpoint = Checkpoint {
-        version: 1,
+        version: 2,
         warehouse_id: session.summary().warehouse_id.to_string(),
         snapshot: info,
         manifest_sha256: digest(manifest),
@@ -256,13 +263,33 @@ fn check_inner(
         } else {
             Err(CoreError::AgentWarehouseChanged)
         };
-        if identity_matches && hash == checkpoint.snapshot.content_sha256 && verified.is_ok() {
+        let fixed_layout =
+            checkpoint.version == 2 && checkpoint.snapshot.relative_path == FIXED_RELATIVE_PATH;
+        if identity_matches
+            && fixed_layout
+            && hash == checkpoint.snapshot.content_sha256
+            && verified.is_ok()
+        {
             report.state = "current";
+            if refresh
+                && session.is_writable()
+                && snapshot::retire_legacy_layout(session.root()).is_err()
+            {
+                report.warnings.push(
+                    "固定快照有效，但旧预览版代际尚未全部移入固定回收区；请关闭占用后重试检查。"
+                        .into(),
+                );
+            }
             return Ok(());
         }
         if let Err(error) = verified {
             // Unsafe paths/permissions are surfaced, never repaired through or deleted.
             report.error = Some(error.into());
+        } else if !fixed_layout {
+            report.warnings.push(
+                "检测到旧预览版 Agent 快照布局；以写入方式检查后会迁移到固定 agent-access/snapshot。"
+                    .into(),
+            );
         }
     }
     if refresh && session.is_writable() {

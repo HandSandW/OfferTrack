@@ -24,12 +24,12 @@ fn fixture() -> (tempfile::TempDir, WarehouseSession, String) {
     .unwrap();
     (root, session, record.record.id)
 }
-fn generations(s: &WarehouseSession) -> usize {
-    fs::read_dir(s.root().join("agent-access")).unwrap().count()
+fn snapshots(s: &WarehouseSession) -> usize {
+    usize::from(s.root().join("agent-access/snapshot").is_dir())
 }
 
 #[test]
-fn checkpoint_not_wall_clock_selects_current_generation_and_database_restore_rebuilds_it() {
+fn checkpoint_not_wall_clock_selects_fixed_snapshot_and_database_restore_rebuilds_it() {
     let (_temp, mut s, id) = fixture();
     let mut future_data = collect(&s).unwrap();
     future_data.generated_at_utc = "2099-01-01T00:00:00Z".into();
@@ -44,7 +44,7 @@ fn checkpoint_not_wall_clock_selects_current_generation_and_database_restore_reb
     let current = check(&s, true);
     assert_eq!(current.state, "current");
     assert!(current.snapshot.as_ref().unwrap().generated_at_utc < future.generated_at_utc);
-    assert_ne!(
+    assert_eq!(
         current.snapshot.as_ref().unwrap().relative_path,
         future.relative_path
     );
@@ -67,13 +67,13 @@ fn checkpoint_not_wall_clock_selects_current_generation_and_database_restore_reb
     let stale = check(&read, false);
     assert_eq!(stale.state, "stale");
     assert!(stale.snapshot.is_none()); // old warehouse identity/path cannot be advertised as current
-    assert_eq!(generations(&read), 0);
+    assert_eq!(snapshots(&read), 0);
     drop(read);
     let restored = warehouse::open(target, WarehouseAccessMode::Write).unwrap();
     assert_ne!(restored.summary().warehouse_id, s.summary().warehouse_id);
     assert_eq!(check(&restored, true).state, "current");
-    assert_eq!(generations(&restored), 1);
-    assert_eq!(generations(&s), 2);
+    assert_eq!(snapshots(&restored), 1);
+    assert_eq!(snapshots(&s), 1);
 }
 
 #[test]
@@ -81,12 +81,23 @@ fn automatic_refresh_tracks_content_not_clock_or_settings_and_survives_reopen() 
     let (_temp, mut s, id) = fixture();
     let before = check(&s, false);
     assert_eq!(before.state, "missing");
-    assert_eq!(generations(&s), 0);
+    assert_eq!(snapshots(&s), 0);
     let first = check(&s, true);
     assert!(first.published);
     assert_eq!(first.state, "current");
     let first_info = first.snapshot.unwrap();
     assert_eq!(check(&s, false).state, "current");
+    let legacy = s.root().join(format!(
+        "agent-access/snapshot-20260904T000000Z-{}",
+        uuid::Uuid::new_v4()
+    ));
+    fs::create_dir(&legacy).unwrap();
+    fs::write(s.root().join("agent-access/current.json"), b"old pointer").unwrap();
+    let migration_only = check(&s, true);
+    assert_eq!(migration_only.state, "current");
+    assert!(!migration_only.published);
+    assert!(!legacy.exists());
+    assert!(!s.root().join("agent-access/current.json").exists());
     crate::agent_write::settings::set(&mut s, true, 0).unwrap();
     applications::scan_all_documents(&mut s).unwrap();
     let second = check(&s, true);
@@ -95,14 +106,14 @@ fn automatic_refresh_tracks_content_not_clock_or_settings_and_survives_reopen() 
         second.snapshot.unwrap().relative_path,
         first_info.relative_path
     );
-    assert_eq!(generations(&s), 1);
+    assert_eq!(snapshots(&s), 1);
     assert_eq!(crate::database_backup::catalog(&s).unwrap().items.len(), 0);
     applications::set_archived(&mut s, &id, true).unwrap();
     assert_eq!(check(&s, false).state, "stale");
     let third = check(&s, true);
     assert!(third.published);
     assert_eq!(third.state, "current");
-    assert_eq!(generations(&s), 2);
+    assert_eq!(snapshots(&s), 1);
     assert!(s.root().join(first_info.relative_path).is_dir());
     let path = s.root().to_owned();
     drop(s);
@@ -112,7 +123,7 @@ fn automatic_refresh_tracks_content_not_clock_or_settings_and_survives_reopen() 
     assert_eq!(result.state, "current");
     assert!(!result.published);
     assert_eq!(read.connection().total_changes(), changes);
-    assert_eq!(generations(&read), 2);
+    assert_eq!(snapshots(&read), 1);
 }
 
 #[test]
@@ -143,7 +154,7 @@ fn stale_readonly_and_query_never_publish_and_failed_checks_preserve_last_genera
     )
     .unwrap();
     assert_eq!(queried["state"], "stale");
-    assert_eq!(generations(&s), 1);
+    assert_eq!(snapshots(&s), 1);
     assert!(
         queried["snapshot"]["relative_path"]
             .as_str()
@@ -183,7 +194,7 @@ fn stale_readonly_and_query_never_publish_and_failed_checks_preserve_last_genera
 }
 
 #[test]
-fn tampered_generation_is_detected_then_replaced_by_new_directory_never_overwritten() {
+fn tampered_fixed_snapshot_is_detected_and_overwritten_in_place() {
     let (_temp, s, _) = fixture();
     let first = check(&s, true).snapshot.unwrap();
     let original = s.root().join(&first.relative_path);
@@ -194,12 +205,12 @@ fn tampered_generation_is_detected_then_replaced_by_new_directory_never_overwrit
     let second = check(&s, true);
     assert_eq!(second.state, "current");
     assert!(second.published);
-    assert_ne!(second.snapshot.unwrap().relative_path, first.relative_path);
-    assert_eq!(
+    assert_eq!(second.snapshot.unwrap().relative_path, first.relative_path);
+    assert_ne!(
         fs::read(original.join("tasks.jsonl")).unwrap(),
         b"corrupt-private-data"
     );
-    assert_eq!(generations(&s), 2);
+    assert_eq!(snapshots(&s), 1);
 }
 
 #[test]
@@ -222,7 +233,7 @@ fn checkpoint_failure_reports_published_files_without_claiming_synced() {
         .execute_batch("DROP TRIGGER fail_checkpoint;")
         .unwrap();
     assert_eq!(check(&s, true).state, "current");
-    assert_eq!(generations(&s), 2);
+    assert_eq!(snapshots(&s), 1);
 }
 
 #[test]
@@ -249,7 +260,7 @@ fn corrupt_future_or_unsafe_checkpoint_is_not_overwritten_or_followed() {
             )
             .unwrap();
         assert_eq!(check(&s, true).state, "error");
-        assert_eq!(generations(&s), 1);
+        assert_eq!(snapshots(&s), 1);
         let stored: String = s
             .connection()
             .query_row("SELECT value_json FROM settings WHERE key=?1", [KEY], |r| {
@@ -280,12 +291,12 @@ fn external_document_index_changes_refresh_but_identical_scan_does_not() {
     applications::scan_all_documents(&mut s).unwrap();
     assert_eq!(check(&s, false).state, "stale");
     assert!(check(&s, true).published);
-    assert_eq!(generations(&s), 2);
+    assert_eq!(snapshots(&s), 1);
 }
 
 #[cfg(windows)]
 #[test]
-fn generation_junction_is_not_followed_and_external_content_survives_refresh() {
+fn fixed_snapshot_junction_is_not_followed_and_external_content_survives_refresh() {
     let (_temp, s, _) = fixture();
     let first = check(&s, true).snapshot.unwrap();
     let generation = s.root().join(&first.relative_path);
@@ -299,8 +310,7 @@ fn generation_junction_is_not_followed_and_external_content_survives_refresh() {
     assert_eq!(stale.state, "stale");
     assert_eq!(stale.error.unwrap().code, "UNSAFE_PATH_REJECTED");
     let next = check(&s, true);
-    assert_eq!(next.state, "current");
-    assert_ne!(next.snapshot.unwrap().relative_path, first.relative_path);
+    assert_eq!(next.state, "error");
     assert_eq!(
         fs::read(outside.path().join("sentinel")).unwrap(),
         b"unchanged"

@@ -1,5 +1,6 @@
 import { useContext, type ReactNode } from "react";
 import type { WarehouseSummary } from "../../contracts";
+import { formatLocalDateTime } from "../../shared/dateTime";
 import { SnapshotContext, useSnapshot } from "./useSnapshot";
 
 export function AgentSnapshotProvider({
@@ -62,11 +63,15 @@ export function SnapshotStatus() {
           文件已发布但检查点未保存，本次监测已暂停自动重试。请排除错误后主动检查，或重新连接仓库。
         </p>
       )}
-      {report && <p>上次检查（UTC）：{report.checked_at_utc}</p>}
+      {report && <p>上次检查：{formatLocalDateTime(report.checked_at_utc)}</p>}
       {report?.snapshot && (
         <>
-          <p>已记录的快照生成时间（UTC）：{report.snapshot.generated_at_utc}</p>
-          <p className="path-label">{report.snapshot.relative_path}</p>
+          <p>提供给 Agent 的固定快照目录：</p>
+          <p className="path-label">agent-access/snapshot</p>
+          <p>
+            已记录的快照生成时间：
+            {formatLocalDateTime(report.snapshot.generated_at_utc)}
+          </p>
           <p>
             共 {report.snapshot.application_count}{" "}
             条投递。路径相对于当前仓库根；请结合上述新鲜度使用，不能仅凭目录时间判断。

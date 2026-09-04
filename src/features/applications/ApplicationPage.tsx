@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import type {
-  ApplicationDetail,
   ApplicationListItem,
   ApplicationScope,
   ColumnSetting,
@@ -24,7 +23,6 @@ import {
   columnsWithFields,
   filterAndSort,
 } from "./tableModel";
-import { DetailPanel } from "./DetailPanel";
 import { ApplicationGrid } from "./ApplicationGrid";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
 import { Modal } from "../../shared/Modal";
@@ -65,7 +63,8 @@ function Cell({
         }}
       >
         {record.currentStageState === "failed" ? "已挂 · " : ""}
-        {record.currentStageName} · {record.currentStateName}
+        {record.currentStageName}
+        {record.currentStateName ? ` · ${record.currentStateName}` : ""}
       </span>
     );
   }
@@ -112,7 +111,6 @@ export function ApplicationPage({
   const { confirmLeave } = useDraftGuard();
   const [records, setRecords] = useState<ApplicationListItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ApplicationDetail | null>(null);
   const [fields, setFields] = useState<FieldDefinition[]>([]);
   const [views, setViews] = useState<SavedView[]>([]);
   const [columns, setColumns] = useState(defaultColumns);
@@ -122,6 +120,8 @@ export function ApplicationPage({
   const [filter, setFilter] = useState(initialFilter);
   const [group, setGroup] = useState<GroupKey | null>(null);
   const [pageSize, setPageSize] = useState(50);
+  const [pageSizeInput, setPageSizeInput] = useState("50");
+  const [pageSizeError, setPageSizeError] = useState("");
   const [page, setPage] = useState(1);
   const [showColumns, setShowColumns] = useState(false);
   const [showCreate, setShowCreate] = useState(initialCreateOpen);
@@ -140,7 +140,6 @@ export function ApplicationPage({
     columns: ColumnSetting[];
   } | null>(null);
   const selectedRef = useRef<string | null>(null);
-  const selectionRequest = useRef(0);
   useDraftState(
     showCreate && JSON.stringify(createForm) !== JSON.stringify(initialCreate),
     busy,
@@ -172,6 +171,7 @@ export function ApplicationPage({
         setFields(nextFields);
         setViews(nextViews);
         setPageSize(size);
+        setPageSizeInput(String(size));
         const view = nextViews.find((item) => item.isDefault);
         setColumns(
           columnsWithFields(view?.layout.columns ?? defaultColumns, nextFields),
@@ -208,40 +208,36 @@ export function ApplicationPage({
     )
       return;
     let active = true;
-    const request = ++selectionRequest.current;
+    const id = drilldown.ids[0]!;
+    if (!records.some((record) => record.id === id)) {
+      onError(
+        new OfferTrackError({
+          code: "APPLICATION_SCOPE_CHANGED",
+          message: "该投递已不在当前分区，请刷新概览后重试。",
+          retryable: true,
+        }),
+      );
+      return;
+    }
     setBusy(true);
     void desktopApi
-      .getApplication(drilldown.ids[0]!)
-      .then((next) => {
-        if (active && request === selectionRequest.current) {
-          if (
-            next.deletedAtUtc ||
-            (scope === "archived" ? !next.archivedAtUtc : next.archivedAtUtc)
-          ) {
-            onError(
-              new OfferTrackError({
-                code: "APPLICATION_SCOPE_CHANGED",
-                message: "该投递已不在当前分区，请刷新概览后重试。",
-                retryable: true,
-              }),
-            );
-            return;
-          }
-          selectedRef.current = next.id;
-          setSelectedId(next.id);
-          setDetail(next);
+      .setApplicationDetailTarget(id, true)
+      .then(() => {
+        if (active) {
+          selectedRef.current = id;
+          setSelectedId(id);
         }
       })
       .catch((error: unknown) => {
         if (active) onError(error);
       })
       .finally(() => {
-        if (active && request === selectionRequest.current) setBusy(false);
+        if (active) setBusy(false);
       });
     return () => {
       active = false;
     };
-  }, [drilldown, loading, loadError, onError, scope]);
+  }, [drilldown, loading, loadError, onError, records]);
 
   useEffect(() => {
     let timer = 0;
@@ -251,15 +247,6 @@ export function ApplicationPage({
         if (writable) await desktopApi.refreshFileIndex();
         if (!active) return;
         await refresh();
-        if (selectedId) {
-          const next = await desktopApi.getApplication(selectedId);
-          if (active)
-            setDetail((current) =>
-              current?.id === selectedId
-                ? { ...current, documents: next.documents }
-                : current,
-            );
-        }
       } catch (error) {
         if (
           active &&
@@ -285,23 +272,24 @@ export function ApplicationPage({
       window.removeEventListener("focus", schedule);
       void unlisten.then((dispose) => dispose());
     };
-  }, [onError, refresh, selectedId, writable]);
+  }, [onError, refresh, writable]);
 
-  const select = async (id: string) => {
-    if (id === selectedRef.current || !(await confirmLeave())) return;
-    const request = ++selectionRequest.current;
-    setBusy(true);
-    try {
-      const next = await desktopApi.getApplication(id);
-      if (request !== selectionRequest.current) return;
-      selectedRef.current = id;
-      setSelectedId(id);
-      setDetail(next);
-    } catch (error) {
-      if (request === selectionRequest.current) onError(error);
-    } finally {
-      if (request === selectionRequest.current) setBusy(false);
-    }
+  useEffect(() => {
+    const unlisten = listen("application-detail-changed", () => void refresh());
+    return () => void unlisten.then((dispose) => dispose());
+  }, [refresh]);
+
+  const select = (id: string) => {
+    if (id === selectedRef.current) return;
+    selectedRef.current = id;
+    setSelectedId(id);
+    void desktopApi.setApplicationDetailTarget(id, false).catch(onError);
+  };
+
+  const openDetail = (id: string) => {
+    selectedRef.current = id;
+    setSelectedId(id);
+    void desktopApi.setApplicationDetailTarget(id, true).catch(onError);
   };
 
   const visibleColumns = columns.filter((column) => column.visible);
@@ -373,21 +361,12 @@ export function ApplicationPage({
       setShowCreate(false);
       setCreateForm(initialCreate);
       await refresh();
-      detailChanged(created);
+      select(created.id);
     } catch (error) {
       onError(error);
     } finally {
       setBusy(false);
     }
-  };
-
-  const detailChanged = (next: ApplicationDetail | null) => {
-    selectionRequest.current += 1;
-    selectedRef.current = next?.id ?? null;
-    setDetail(next);
-    if (next) setSelectedId(next.id);
-    else setSelectedId(null);
-    void refresh();
   };
 
   const cancelCreate = async () => {
@@ -578,7 +557,6 @@ export function ApplicationPage({
               onClick={() => {
                 void (async () => {
                   if (await confirmLeave()) {
-                    detailChanged(null);
                     setShowCreate(true);
                   }
                 })();
@@ -598,13 +576,18 @@ export function ApplicationPage({
           >
             选择本页
           </button>
-          {detail && (
+          {selectedId && (
             <button
               type="button"
               disabled={busy}
               onClick={() =>
                 chooseBatch(
-                  records.filter((r) => r.companyName === detail.companyName),
+                  records.filter(
+                    (r) =>
+                      r.companyName ===
+                      records.find((item) => item.id === selectedId)
+                        ?.companyName,
+                  ),
                 )
               }
             >
@@ -623,10 +606,8 @@ export function ApplicationPage({
                 onClick={() =>
                   void (async () => {
                     if (!(await confirmLeave())) return;
-                    selectionRequest.current += 1;
                     selectedRef.current = null;
                     setSelectedId(null);
-                    setDetail(null);
                     setBatchTargets([...checked]);
                   })()
                 }
@@ -747,13 +728,19 @@ export function ApplicationPage({
           disabled={busy || loading || !!loadError}
           empty={!loading && !loadError}
           onSort={toggleSort}
-          onOpen={(id) => void select(id)}
+          onFocus={select}
+          onOpen={openDetail}
+          onColumnsChange={(nextVisible) => {
+            const visible = [...nextVisible];
+            setColumns((current) => {
+              let visibleIndex = 0;
+              return current.map((item) =>
+                item.visible ? (visible[visibleIndex++] ?? item) : item,
+              );
+            });
+          }}
           onBeforeEdit={async () => {
             if (!(await confirmLeave())) return false;
-            selectionRequest.current += 1;
-            selectedRef.current = null;
-            setSelectedId(null);
-            setDetail(null);
             return true;
           }}
           onUpdated={(record) => {
@@ -778,23 +765,55 @@ export function ApplicationPage({
               : `共 ${processed.length} 条`}
           </span>
           <select
-            aria-label="每页条数"
+            aria-label="每页条数快捷选择"
             disabled={loading || !!loadError}
             onChange={(event) => {
+              if (event.target.value === "custom") return;
               const value = Number(event.target.value);
               setPageSize(value);
+              setPageSizeInput(String(value));
+              setPageSizeError("");
               setPage(1);
             }}
-            value={pageSize}
+            value={[20, 50, 100, 200].includes(pageSize) ? pageSize : "custom"}
           >
             {[20, 50, 100, 200].map((size) => (
               <option key={size} value={size}>
                 每页 {size} 条
               </option>
             ))}
+            <option value="custom">自定义</option>
           </select>
+          <label className="page-size-input">
+            每页
+            <input
+              aria-label="自定义每页条数"
+              disabled={loading || !!loadError}
+              inputMode="numeric"
+              min={1}
+              max={500}
+              type="number"
+              value={pageSizeInput}
+              onChange={(event) => {
+                const text = event.target.value;
+                setPageSizeInput(text);
+                const value = Number(text);
+                if (!/^\d+$/.test(text) || value < 1 || value > 500) {
+                  setPageSizeError("请输入 1–500 的整数。");
+                  return;
+                }
+                setPageSizeError("");
+                setPageSize(value);
+                setPage(1);
+              }}
+            />
+            条
+          </label>
+          {pageSizeError && <span role="alert">{pageSizeError}</span>}
           <button
-            disabled={!writable || loading || !!loadError || busy}
+            disabled={
+              !writable || loading || !!loadError || busy || !!pageSizeError
+            }
             onClick={() =>
               void desktopApi.setApplicationPageSize(pageSize).catch(onError)
             }
@@ -821,18 +840,6 @@ export function ApplicationPage({
           </button>
         </div>
       </div>
-
-      {detail && (
-        <DetailPanel
-          key={detail.id}
-          detail={detail}
-          fields={fields}
-          onChange={detailChanged}
-          onError={onError}
-          scope={scope}
-          writable={writable && !busy}
-        />
-      )}
 
       {batchTargets && (
         <BatchDialog

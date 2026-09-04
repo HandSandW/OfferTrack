@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { desktopApi, OfferTrackError } from "../../lib/tauri";
 import type { WarehouseSummary } from "../../contracts";
 import type { SnapshotReport } from "./contracts";
+import { formatLocalDateTime } from "../../shared/dateTime";
 import {
   AgentSnapshotProvider,
   SnapshotNotice,
@@ -29,7 +30,7 @@ function report(overrides: Partial<SnapshotReport> = {}): SnapshotReport {
     checked_at_utc: "2026-09-03T01:00:00Z",
     state: "current",
     snapshot: {
-      relative_path: "agent-access/snapshot-synthetic",
+      relative_path: "agent-access/snapshot",
       generated_at_utc: "2026-09-03T00:00:00Z",
       application_count: 2,
       content_sha256: "a".repeat(64),
@@ -86,10 +87,10 @@ describe("automatic Agent snapshots", () => {
     );
     expect(screen.getByText(/文件校验通过/)).toBeInTheDocument();
     expect(screen.getByText(/上次检查/)).toHaveTextContent(
-      "2026-09-03T01:00:00Z",
+      formatLocalDateTime("2026-09-03T01:00:00Z"),
     );
     expect(screen.getByText(/已记录的快照生成时间/)).toHaveTextContent(
-      "2026-09-03T00:00:00Z",
+      formatLocalDateTime("2026-09-03T00:00:00Z"),
     );
     fireEvent(window, new Event("offertrack-snapshot-dirty"));
     fireEvent(window, new Event("offertrack-snapshot-dirty"));
@@ -165,9 +166,7 @@ describe("automatic Agent snapshots", () => {
       await Promise.resolve();
     });
     expect(screen.getByText(/尚无可追踪快照/)).toBeInTheDocument();
-    expect(
-      screen.queryByText("agent-access/snapshot-synthetic"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText("agent-access/snapshot")).not.toBeInTheDocument();
   });
 
   it("retains previous details on failed check, separates business success, and permits retry", async () => {
@@ -193,16 +192,14 @@ describe("automatic Agent snapshots", () => {
     await advance();
     expect(screen.getByText(/业务修改不受影响/)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent("临时检查错误");
-    expect(
-      screen.getByText("agent-access/snapshot-synthetic"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("agent-access/snapshot")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "检查并按需刷新快照" }));
     await advance(0);
     expect(screen.getByRole("alert")).toHaveTextContent(
       "快照文件已发布但检查点失败",
     );
     await advance(120000);
-    expect(check).toHaveBeenCalledTimes(3); // avoid accumulating unpublished checkpoints every minute
+    expect(check).toHaveBeenCalledTimes(3); // avoid repeatedly rewriting after an unpublished checkpoint
     fireEvent.click(screen.getByRole("button", { name: "检查并按需刷新快照" }));
     await advance(0);
     expect(check).toHaveBeenCalledTimes(4);

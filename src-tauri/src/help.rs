@@ -76,6 +76,40 @@ pub(crate) fn command_allowed(label: &str, command: &str) -> bool {
                 command,
                 "get_help_location" | "get_help_diagnostics" | "open_help_logs"
             ))
+        || (label == "application-detail"
+            && matches!(
+                command,
+                "get_application_detail_target"
+                    | "notify_application_detail_changed"
+                    | "get_startup_state"
+                    | "get_application"
+                    | "list_field_definitions"
+                    | "update_application"
+                    | "change_application_stage"
+                    | "save_workflow_stage"
+                    | "delete_workflow_stage"
+                    | "reorder_application_workflow"
+                    | "update_application_states"
+                    | "save_workflow_as_template"
+                    | "save_interview_round"
+                    | "delete_interview_round"
+                    | "preview_application_duplicate"
+                    | "duplicate_application"
+                    | "set_application_archived"
+                    | "move_application_to_trash"
+                    | "scan_application_documents"
+                    | "retry_folder_normalization"
+                    | "rename_document"
+                    | "trash_document"
+                    | "list_application_directories"
+                    | "inspect_application_files"
+                    | "open_application_folder"
+                    | "open_document"
+                    | "available_browsers"
+                    | "reveal_document"
+                    | "get_document_path"
+                    | "open_web_url"
+            ))
 }
 
 pub(crate) fn show<R: Runtime>(
@@ -220,6 +254,24 @@ mod tests {
             assert!(command_allowed("help", command));
             assert!(!command_allowed("unknown", command));
         }
+        for command in [
+            "get_application_detail_target",
+            "get_application",
+            "update_application",
+            "list_application_directories",
+            "inspect_application_files",
+            "open_document",
+        ] {
+            assert!(command_allowed("application-detail", command));
+        }
+        for command in [
+            "create_warehouse",
+            "empty_recycle_bin",
+            "set_agent_permission",
+            "restore_full_backup",
+        ] {
+            assert!(!command_allowed("application-detail", command));
+        }
         let capabilities: serde_json::Value =
             serde_json::from_str(include_str!("../capabilities/help.json")).unwrap();
         assert_eq!(capabilities["windows"], serde_json::json!(["help"]));
@@ -227,6 +279,9 @@ mod tests {
             capabilities["permissions"],
             serde_json::json!(["core:event:allow-listen", "core:event:allow-unlisten"])
         );
+        let detail: serde_json::Value =
+            serde_json::from_str(include_str!("../capabilities/detail.json")).unwrap();
+        assert_eq!(detail["windows"], serde_json::json!(["application-detail"]));
     }
 
     #[test]

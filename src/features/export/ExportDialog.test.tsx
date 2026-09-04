@@ -104,7 +104,7 @@ it("selects explicit whole-warehouse or selected scopes and keeps paths opt-in",
   fireEvent.change(screen.getByLabelText("文件格式"), {
     target: { value: "csv" },
   });
-  fireEvent.click(screen.getByText("包含隐藏列和自定义字段（不含绝对路径）"));
+  fireEvent.click(screen.getByText("全选字段（不含绝对路径）"));
   expect(screen.getByLabelText("简历绝对路径")).not.toBeChecked();
   await run();
   expect(desktopApi.exportApplications).toHaveBeenLastCalledWith(

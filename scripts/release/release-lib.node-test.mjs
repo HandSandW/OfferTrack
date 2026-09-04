@@ -19,7 +19,7 @@ const repositoryRoot = resolve(import.meta.dirname, "../..");
 test("current release metadata preserves the security and format contract", async () => {
   const metadata = await readReleaseMetadata(repositoryRoot);
   assert.equal(metadata.packageVersion, "0.1.0");
-  assert.equal(metadata.schemaVersion, 11);
+  assert.equal(metadata.schemaVersion, 12);
   assert.equal(metadata.mcpTools.length, 10);
 });
 
@@ -89,10 +89,15 @@ test("portable assembly is allowlisted, self-verifying and never overwrites", as
     for (const [source, name, kind] of PORTABLE_SOURCE_FILES) {
       const target = join(fakeRepository, source);
       await mkdir(dirname(target), { recursive: true });
-      const value =
-        kind === "binary"
-          ? Buffer.from(`MZsynthetic-${name}`)
-          : `${name}\n${"safe ".repeat(30)}`;
+      let value;
+      if (kind === "binary") value = Buffer.from(`MZsynthetic-${name}`);
+      else if (kind === "text") value = `${name}\n${"safe ".repeat(30)}`;
+      else {
+        value = Buffer.alloc(24);
+        Buffer.from("89504e470d0a1a0a", "hex").copy(value);
+        value.writeUInt32BE(1, 16);
+        value.writeUInt32BE(1, 20);
+      }
       await writeFile(target, value, { flag: "wx" });
     }
     await writeFile(join(fakeRepository, "private.sqlite"), "must not ship", {
@@ -100,7 +105,7 @@ test("portable assembly is allowlisted, self-verifying and never overwrites", as
     });
     const metadata = {
       packageVersion: "0.1.0",
-      schemaVersion: 11,
+      schemaVersion: 12,
       warehouseFormatVersion: 1,
     };
     const result = await assemblePortableDirectory({
@@ -115,6 +120,14 @@ test("portable assembly is allowlisted, self-verifying and never overwrites", as
     assert.equal(
       manifest.files.some((file) => file.path.endsWith(".sqlite")),
       false,
+    );
+    assert(
+      manifest.files.some((file) => file.path === "docs/user-guide/README.md"),
+    );
+    assert(
+      manifest.files.some(
+        (file) => file.path === "docs/assets/offertrack-slogan.png",
+      ),
     );
     await assert.rejects(
       assemblePortableDirectory({
@@ -132,7 +145,7 @@ test("portable assembly is allowlisted, self-verifying and never overwrites", as
 test("portable output is rejected inside the repository", async () => {
   const metadata = {
     packageVersion: "0.1.0",
-    schemaVersion: 11,
+    schemaVersion: 12,
     warehouseFormatVersion: 1,
   };
   await assert.rejects(
@@ -143,4 +156,16 @@ test("portable output is rejected inside the repository", async () => {
     }),
     /outside the repository/,
   );
+});
+
+test("portable ZIP helper preserves nested allowlisted files and rejects links", async () => {
+  const source = await readFile(
+    join(repositoryRoot, "scripts/release/create-portable-zip.ps1"),
+    "utf8",
+  );
+  assert(source.includes("-Recurse"));
+  assert(source.includes("Substring($sourcePath.Length)"));
+  assert(!source.includes("GetRelativePath"));
+  assert(source.includes("ReparsePoint"));
+  assert(!source.includes("only regular root files"));
 });

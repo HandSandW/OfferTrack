@@ -118,6 +118,24 @@ fn views_rename_copy_update_and_delete_only_metadata_and_survive_reopen() {
 }
 
 #[test]
+fn application_view_names_are_unique_after_trim_and_case_folding() {
+    let dir = tempdir().unwrap();
+    let mut session = warehouse::create(dir.path()).unwrap();
+    let first = views::save(&mut session, view_request("My View", false))
+        .unwrap()
+        .view;
+    assert!(matches!(
+        views::save(&mut session, view_request("  my view  ", false)),
+        Err(CoreError::DuplicateViewName)
+    ));
+    assert!(matches!(
+        views::duplicate(&mut session, &first.id, first.revision, "MY VIEW"),
+        Err(CoreError::DuplicateViewName)
+    ));
+    assert_eq!(views::list(&session).unwrap().len(), 1);
+}
+
+#[test]
 fn business_view_filters_roundtrip_and_reject_unknown_semantics_without_writes() {
     let dir = tempdir().unwrap();
     let mut session = warehouse::create(dir.path()).unwrap();

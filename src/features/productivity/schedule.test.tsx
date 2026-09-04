@@ -327,6 +327,22 @@ it("shares one overview subscription across pages, refreshes on focus and writes
   expect(desktopApi.getOverview).toHaveBeenCalledTimes(4);
 });
 
+it("does not reserve banner space when there are no important reminders", async () => {
+  vi.mocked(desktopApi.getOverview).mockResolvedValue(
+    overviewFixture({ reminders: [] }),
+  );
+  render(
+    <OverviewProvider enabled page="applications" onError={onError}>
+      <ReminderBanner onOpen={open} />
+    </OverviewProvider>,
+  );
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(desktopApi.getOverview).toHaveBeenCalledTimes(1);
+  expect(screen.queryByLabelText("应用内提醒")).not.toBeInTheDocument();
+});
+
 it("ignores late results after warehouse context replacement", async () => {
   let resolve!: (data: ReturnType<typeof overviewFixture>) => void;
   vi.mocked(desktopApi.getOverview).mockImplementationOnce(

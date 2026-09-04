@@ -550,7 +550,7 @@ pub fn create(
                     current_stage_state, status_updated_at_utc, updated_at_utc, revision
                  ) VALUES (
                     ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
-                    'pending', ?3, ?3, 1
+                    '', ?3, ?3, 1
                  )",
                 params![
                     id,
@@ -579,7 +579,7 @@ pub fn create(
                 "INSERT INTO workflow_events (
                     id, application_id, stage_id, stage_name_snapshot,
                     previous_state, next_state, notes, occurred_at_utc, actor_type
-                 ) VALUES (?1, ?2, ?3, ?4, NULL, 'pending', '', ?5, 'user')",
+                 ) VALUES (?1, ?2, ?3, ?4, NULL, '', '', ?5, 'user')",
                 params![
                     Uuid::new_v4().to_string(),
                     id,
@@ -1206,7 +1206,7 @@ pub fn claim_folder(
                 work_location, folder_relative_path, folder_normalization_pending,
                 current_stage_state, status_updated_at_utc, updated_at_utc, revision
              ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12,
-                       'pending', ?3, ?3, 1)",
+                       '', ?3, ?3, 1)",
             params![
                 id,
                 short_id,
@@ -1235,7 +1235,7 @@ pub fn claim_folder(
             "INSERT INTO workflow_events (
                 id, application_id, stage_id, stage_name_snapshot, previous_state,
                 next_state, notes, occurred_at_utc, actor_type
-             ) VALUES (?1, ?2, ?3, ?4, NULL, 'pending', '', ?5, 'user')",
+             ) VALUES (?1, ?2, ?3, ?4, NULL, '', '', ?5, 'user')",
             params![
                 Uuid::new_v4().to_string(),
                 id,
@@ -1364,7 +1364,7 @@ pub(crate) fn change_stage_with_actor(
                 request.application_id,
                 request.stage_id,
                 stage_name,
-                Some(previous_state),
+                (!previous_state.is_empty()).then_some(previous_state),
                 next_state,
                 request.notes,
                 now,
@@ -1943,11 +1943,15 @@ pub fn page_size(session: &WarehouseSession) -> Result<i64, CoreError> {
         .optional()
         .map_err(|_| CoreError::DatabaseInvalid)?
         .unwrap_or_else(|| "50".to_owned());
-    serde_json::from_str(&json).map_err(|_| CoreError::DatabaseInvalid)
+    let value = serde_json::from_str(&json).map_err(|_| CoreError::DatabaseInvalid)?;
+    if !(1..=500).contains(&value) {
+        return Err(CoreError::DatabaseInvalid);
+    }
+    Ok(value)
 }
 
 pub fn set_page_size(session: &mut WarehouseSession, value: i64) -> Result<i64, CoreError> {
-    if ![20_i64, 50, 100, 200].contains(&value) {
+    if !(1..=500).contains(&value) {
         return Err(CoreError::Validation);
     }
     session
@@ -2077,7 +2081,7 @@ pub fn duplicate(
                     notes, folder_relative_path, current_stage_state,
                     status_updated_at_utc, updated_at_utc, revision
                  ) VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6, ?7, ?8, ?9, ?10,
-                           ?11, ?12, ?13, ?14, ?15, ?16, ?17, 'pending', ?3, ?3, 1)",
+                           ?11, ?12, ?13, ?14, ?15, ?16, ?17, '', ?3, ?3, 1)",
                 params![
                     id,
                     short_id,
@@ -2115,7 +2119,7 @@ pub fn duplicate(
                 "INSERT INTO workflow_events (
                     id, application_id, stage_id, stage_name_snapshot, previous_state,
                     next_state, notes, occurred_at_utc, actor_type
-                 ) VALUES (?1, ?2, ?3, ?4, NULL, 'pending', '', ?5, 'user')",
+                 ) VALUES (?1, ?2, ?3, ?4, NULL, '', '', ?5, 'user')",
                 params![
                     Uuid::new_v4().to_string(),
                     id,
@@ -2276,7 +2280,7 @@ mod tests {
             Some("preparing")
         );
         assert!(!detail.record.current_stage_terminal);
-        assert_eq!(detail.record.current_stage_state, "pending");
+        assert_eq!(detail.record.current_stage_state, "");
         assert!(detail.record.application_date.is_none());
         assert!(
             directory
@@ -2312,10 +2316,7 @@ mod tests {
 
         assert!(changed.record.application_date.is_some());
         assert_eq!(changed.record.current_stage_name, "已投递");
-        assert_eq!(
-            changed.history[0].previous_state.as_deref(),
-            Some("pending")
-        );
+        assert_eq!(changed.history[0].previous_state, None);
         assert_eq!(changed.history[0].next_state, "awaitingResult");
     }
 
@@ -3000,5 +3001,21 @@ mod tests {
         assert_eq!(views[0].name, "开发岗位");
         assert!(views[0].is_default);
         assert_eq!(views[0].layout["columns"][0]["width"], 180);
+    }
+
+    #[test]
+    fn pagination_accepts_custom_values_with_a_safe_bound() {
+        let directory = tempdir().unwrap();
+        let mut session = warehouse::create(directory.path()).unwrap();
+        for value in [1, 37, 75, 500] {
+            assert_eq!(set_page_size(&mut session, value).unwrap(), value);
+            assert_eq!(page_size(&session).unwrap(), value);
+        }
+        for value in [0, -1, 501] {
+            assert!(matches!(
+                set_page_size(&mut session, value),
+                Err(CoreError::Validation)
+            ));
+        }
     }
 }

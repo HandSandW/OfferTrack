@@ -2,6 +2,7 @@ import { useState } from "react";
 import { desktopApi } from "../../lib/tauri";
 import { selectDirectory } from "../../lib/dialog";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
+import { formatLocalDateTime } from "../../shared/dateTime";
 import type { BackupCatalog, BackupItem, BackupTrashResult } from "./contracts";
 
 const reasons = {
@@ -178,7 +179,7 @@ export function DatabaseBackupPanel({
             {catalog.items.map((item) => (
               <section key={`${item.recycled}-${item.id}`}>
                 <strong>
-                  {new Date(item.createdAtUtc).toLocaleString()} ·{" "}
+                  {formatLocalDateTime(item.createdAtUtc)} ·{" "}
                   {reasons[item.reason]}
                   {item.recycled ? " · 已移入回收站" : ""}
                 </strong>

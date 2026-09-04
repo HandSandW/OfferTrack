@@ -24,6 +24,7 @@ export function ReminderBanner({ onOpen }: { onOpen: () => void }) {
   const value = useContext(OverviewContext);
   if (!value) return null;
   const { data, error, loading } = value;
+  if (!data?.reminders.length) return null;
   return (
     <div className="notice info" aria-label="应用内提醒">
       <button onClick={onOpen}>

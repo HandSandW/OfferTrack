@@ -19,6 +19,16 @@
   margin: 0;
   font-size: 23px;
 }
+.help-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.help-brand img {
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+}
 .help-actions {
   display: flex;
   flex-wrap: wrap;

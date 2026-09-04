@@ -120,6 +120,10 @@ it("uses local-only links and never interprets markup, images or executable URLs
 
 it("searches full chapters and supports local history, keyboard shortcuts and about license", () => {
   render(<HelpWindow />);
+  expect(document.querySelector(".help-brand img")).toHaveAttribute(
+    "src",
+    "/app-icon.png",
+  );
   const nav = within(screen.getByRole("navigation", { name: "手册章节" }));
   expect(screen.getByRole("heading", { name: "快速开始" })).toHaveFocus();
   fireEvent.click(nav.getByRole("button", { name: "快捷键" }));

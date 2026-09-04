@@ -2,7 +2,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction};
 
 use crate::error::CoreError;
 
-pub const CURRENT_SCHEMA_VERSION: i64 = 11;
+pub const CURRENT_SCHEMA_VERSION: i64 = 12;
 
 struct Migration {
     version: i64,
@@ -66,6 +66,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 11,
         name: "document_trash",
         sql: include_str!("../migrations/0011_document_trash.sql"),
+    },
+    Migration {
+        version: 12,
+        name: "acceptance_round_one",
+        sql: include_str!("../migrations/0012_acceptance_round_one.sql"),
     },
 ];
 
@@ -164,7 +169,8 @@ pub(crate) fn fixture_remove_migration_eight(connection: &Connection) {
 pub(crate) fn fixture_remove_migration_nine(connection: &Connection) {
     connection
         .execute_batch(
-            "DROP TABLE document_purges; DROP TABLE document_moves; DROP TABLE document_trash;
+            "DROP INDEX idx_views_kind_name_key; ALTER TABLE views DROP COLUMN name_key;
+             DROP TABLE document_purges; DROP TABLE document_moves; DROP TABLE document_trash;
              DROP TABLE document_renames; DELETE FROM schema_migrations WHERE version>=10;",
         )
         .unwrap();

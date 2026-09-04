@@ -47,8 +47,8 @@ export function useSnapshot(
         if (next.warehouse_id !== id)
           throw new Error("仓库已切换，请重新检查快照。");
         setReport(next);
-        // Do not accumulate a new generation every minute if files published but the
-        // checkpoint cannot be recorded. Keep the error visible until explicit retry/reconnect.
+        // Do not repeatedly rewrite the fixed snapshot every minute if files published
+        // but the checkpoint cannot be recorded. Keep the error visible until retry/reconnect.
         publicationNeedsRetry = next.published && next.state === "error";
         setError("");
         contentionRetries = 0;

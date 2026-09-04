@@ -182,7 +182,7 @@ export function ExportDialog({
               )
             }
           >
-            包含隐藏列和自定义字段（不含绝对路径）
+            全选字段（不含绝对路径）
           </button>
           <button type="button" onClick={() => setKeys([])}>
             清除字段选择
@@ -206,6 +206,9 @@ export function ExportDialog({
             </label>
           ))}
         </div>
+        <p className="muted">
+          “全选字段”包含隐藏列和自定义字段，但不会自动选择绝对路径；如确有需要，请单独勾选对应字段。
+        </p>
         {keys.includes("documentPaths") && (
           <p role="status">
             绝对路径会暴露本机目录、用户名等信息；只含最近索引与缺失标记，不验证文件当前可读性。分享前请检查。

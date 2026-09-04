@@ -92,9 +92,12 @@ export function HelpWindow() {
   return (
     <div className="help-shell">
       <header className="help-header">
-        <div>
-          <p className="eyebrow">OfferTrack · 离线使用手册</p>
-          <h1>使用帮助</h1>
+        <div className="help-brand">
+          <img src="/app-icon.png" alt="" aria-hidden="true" />
+          <div>
+            <p className="eyebrow">OfferTrack · 离线使用手册</p>
+            <h1>使用帮助</h1>
+          </div>
         </div>
         <div className="help-actions">
           <button

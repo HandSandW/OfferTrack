@@ -190,12 +190,64 @@ fn fs_canonicalize(path: &Path) -> Result<PathBuf, CoreError> {
 
 #[cfg(windows)]
 fn choose_other_application(path: &Path) -> Result<(), CoreError> {
-    Command::new("rundll32.exe")
-        .arg("shell32.dll,OpenAs_RunDLL")
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(|_| CoreError::FileOperation)
+    use windows_sys::Win32::UI::Shell::{OAIF_ALLOW_REGISTRATION, OPENASINFO, SHOpenWithDialog};
+
+    let wide = windows_shell_path(path);
+    let info = OPENASINFO {
+        pcszFile: wide.as_ptr(),
+        pcszClass: std::ptr::null(),
+        oaifInFlags: OAIF_ALLOW_REGISTRATION,
+    };
+    // SAFETY: `info` points to a valid null-terminated UTF-16 path for the duration of the call.
+    let result = unsafe { SHOpenWithDialog(std::ptr::null_mut(), &info) };
+    if result >= 0 {
+        Ok(())
+    } else {
+        Err(CoreError::FileOperation)
+    }
+}
+
+#[cfg(windows)]
+fn windows_shell_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let verbatim = ['\\' as u16, '\\' as u16, '?' as u16, '\\' as u16];
+    let verbatim_unc = [
+        '\\' as u16,
+        '\\' as u16,
+        '?' as u16,
+        '\\' as u16,
+        'U' as u16,
+        'N' as u16,
+        'C' as u16,
+        '\\' as u16,
+    ];
+    let mut display = if encoded.starts_with(&verbatim_unc) {
+        let mut value = vec!['\\' as u16, '\\' as u16];
+        value.extend_from_slice(&encoded[verbatim_unc.len()..]);
+        value
+    } else if encoded.starts_with(&verbatim) {
+        encoded[verbatim.len()..].to_vec()
+    } else {
+        encoded
+    };
+    display.push(0);
+    display
+}
+
+pub(crate) fn display_path(path: &Path) -> String {
+    #[cfg(windows)]
+    {
+        let value = path.to_string_lossy();
+        if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+            return format!(r"\\{rest}");
+        }
+        if let Some(rest) = value.strip_prefix(r"\\?\") {
+            return rest.to_owned();
+        }
+    }
+    path.to_string_lossy().into_owned()
 }
 
 #[cfg(not(windows))]
@@ -280,5 +332,35 @@ mod tests {
                 Err(CoreError::Validation)
             ));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn open_with_uses_a_regular_windows_display_path() {
+        use std::os::windows::ffi::OsStringExt;
+
+        for (input, expected) in [
+            (r"\\?\D:\资料\简历.docx", r"D:\资料\简历.docx"),
+            (r"\\?\UNC\server\share\简历.pdf", r"\\server\share\简历.pdf"),
+            (r"D:\资料\简历.pdf", r"D:\资料\简历.pdf"),
+        ] {
+            let mut wide = windows_shell_path(Path::new(input));
+            assert_eq!(wide.pop(), Some(0));
+            assert_eq!(std::ffi::OsString::from_wide(&wide), expected);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_hides_only_windows_verbatim_prefixes() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\D:\OfferTrack")),
+            r"D:\OfferTrack"
+        );
+        assert_eq!(
+            display_path(Path::new(r"\\?\UNC\server\share\OfferTrack")),
+            r"\\server\share\OfferTrack"
+        );
+        assert_eq!(display_path(Path::new(r"D:\OfferTrack")), r"D:\OfferTrack");
     }
 }

@@ -7,6 +7,7 @@ import type {
 import { desktopApi } from "../../lib/tauri";
 import { Modal } from "../../shared/Modal";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
+import { formatLocalDateTime } from "../../shared/dateTime";
 import { localDateTime, utcDateTime } from "./editorModel";
 import { stateName } from "../workflows/auxiliaryStateModel";
 import { AuxiliaryStatesEditor } from "../workflows/AuxiliaryStatesEditor";
@@ -96,9 +97,7 @@ export function WorkflowPanel({
                   )?.id ?? "")
                 : (detail.currentStageId ?? "")
             }
-            onChange={(event) =>
-              void changeStage(event.target.value, "pending")
-            }
+            onChange={(event) => void changeStage(event.target.value, "")}
           >
             {detail.stages.map((stage) => (
               <option key={stage.id} value={stage.id}>
@@ -123,6 +122,7 @@ export function WorkflowPanel({
                 void changeStage(detail.currentStageId, event.target.value);
             }}
           >
+            <option value="">无辅助状态</option>
             {detail.auxiliaryStates
               .filter(
                 (state) =>
@@ -217,11 +217,11 @@ export function WorkflowPanel({
             <p>
               计划：
               {round.scheduledAtUtc
-                ? new Date(round.scheduledAtUtc).toLocaleString()
+                ? formatLocalDateTime(round.scheduledAtUtc)
                 : "未安排"}{" "}
               · 完成：
               {round.completedAtUtc
-                ? new Date(round.completedAtUtc).toLocaleString()
+                ? formatLocalDateTime(round.completedAtUtc)
                 : "未完成"}
             </p>
             {round.result && <p>结果：{round.result}</p>}

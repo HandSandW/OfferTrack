@@ -4,6 +4,7 @@ use crate::{
     warehouse::{self, WarehouseAccessMode},
 };
 use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 pub(crate) fn record(s: &mut WarehouseSession, name: &str) -> crate::domain::ApplicationDetail {
     applications::create(
@@ -203,11 +204,15 @@ fn active_archive_deleted_scopes_pagination_and_terminal_counts_are_explicit() {
 }
 
 #[test]
-fn snapshot_publishes_one_complete_generation_with_hashes_and_preserves_previous_files() {
+fn snapshot_overwrites_one_fixed_directory_and_retires_legacy_preview_layout() {
     let root = tempfile::tempdir().unwrap();
     let mut s = warehouse::create(root.path()).unwrap();
-    record(&mut s, "示例");
+    let application = record(&mut s, "示例");
     let first = create(&s).unwrap();
+    assert_eq!(
+        Path::new(&first.path),
+        s.root().join("agent-access/snapshot")
+    );
     assert!(first.root_instructions_created);
     let manifest_bytes = fs::read(Path::new(&first.path).join("manifest.json")).unwrap();
     let manifest: Value = serde_json::from_slice(&manifest_bytes).unwrap();
@@ -223,11 +228,29 @@ fn snapshot_publishes_one_complete_generation_with_hashes_and_preserves_previous
     }
     fs::write(s.root().join("AGENTS.md"), "user instructions - keep me").unwrap();
     fs::create_dir(s.root().join("agent-access/.pending-synthetic-failure")).unwrap();
+    let legacy = s.root().join(format!(
+        "agent-access/snapshot-20260904T000000Z-{}",
+        Uuid::new_v4()
+    ));
+    fs::create_dir(&legacy).unwrap();
+    fs::write(legacy.join("legacy"), b"private-old").unwrap();
+    fs::write(
+        s.root().join("agent-access/current.json"),
+        b"legacy pointer",
+    )
+    .unwrap();
+    s.connection_mut()
+        .unwrap()
+        .execute(
+            "UPDATE applications SET notes='new content' WHERE id=?1",
+            [&application.record.id],
+        )
+        .unwrap();
     let second = create(&s).unwrap();
     assert!(!second.root_instructions_created);
-    assert_ne!(first.path, second.path);
+    assert_eq!(first.path, second.path);
     assert!(!second.warnings.is_empty());
-    assert_eq!(
+    assert_ne!(
         fs::read(Path::new(&first.path).join("manifest.json")).unwrap(),
         manifest_bytes
     );
@@ -239,6 +262,28 @@ fn snapshot_publishes_one_complete_generation_with_hashes_and_preserves_previous
         s.root()
             .join("agent-access/.pending-synthetic-failure")
             .is_dir()
+    );
+    assert!(!s.root().join("agent-access/current.json").exists());
+    assert!(!legacy.exists());
+    let third = create(&s).unwrap();
+    assert!(Path::new(&third.path).is_dir());
+    let recycled = fs::read_dir(s.root().join("recycle-bin/agent-snapshots"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+    assert_eq!(recycled.len(), 2);
+    assert!(
+        recycled
+            .iter()
+            .all(|entry| Uuid::parse_str(&entry.file_name().to_string_lossy()).is_ok())
+    );
+    assert_eq!(
+        fs::read_dir(s.root().join("agent-access"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("snapshot-"))
+            .count(),
+        0
     );
     let read = warehouse::open(s.root(), WarehouseAccessMode::ReadOnly).unwrap();
     assert!(matches!(create(&read), Err(CoreError::ReadOnlyWarehouse)));

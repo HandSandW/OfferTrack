@@ -40,7 +40,9 @@ function show(
           disabled={false}
           empty
           onSort={vi.fn()}
+          onFocus={vi.fn()}
           onOpen={onOpen}
+          onColumnsChange={vi.fn()}
           onBeforeEdit={() => Promise.resolve(true)}
           onUpdated={onUpdated}
           onChecked={vi.fn()}
@@ -67,6 +69,48 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("keyboard application grid", () => {
+  it("resizes and reorders columns directly from the header", () => {
+    const onColumnsChange = vi.fn();
+    show({ onColumnsChange });
+    fireEvent.keyDown(screen.getByLabelText("调整公司名称列宽"), {
+      key: "ArrowRight",
+    });
+    expect(onColumnsChange).toHaveBeenLastCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({ key: "companyName", width: 180 }),
+      ]),
+    );
+    const transfer = {
+      value: "",
+      effectAllowed: "none",
+      setData(_type: string, value: string) {
+        this.value = value;
+      },
+      getData() {
+        return this.value;
+      },
+    };
+    fireEvent.dragStart(
+      screen.getByRole("columnheader", { name: /^公司名称/ }),
+      {
+        dataTransfer: transfer,
+      },
+    );
+    fireEvent.drop(screen.getByRole("columnheader", { name: /^行业/ }), {
+      dataTransfer: transfer,
+    });
+    expect(onColumnsChange).toHaveBeenLastCalledWith(
+      expect.arrayContaining([expect.objectContaining({ key: "companyName" })]),
+    );
+    const reordered = onColumnsChange.mock.lastCall?.[0] as
+      React.ComponentProps<typeof ApplicationGrid>["columns"] | undefined;
+    expect(reordered?.map((item) => item.key)).toEqual([
+      "industry",
+      "companyName",
+      "notes",
+    ]);
+  });
+
   it("navigates by direction and opens detail only when requested", async () => {
     show();
     const company = screen.getByLabelText("公司名称 · 示例公司 · 开发工程师");

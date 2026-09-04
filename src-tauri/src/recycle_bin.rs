@@ -4,6 +4,7 @@ use chrono::{SecondsFormat, Utc};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
+pub mod agent_snapshots;
 pub mod backups;
 
 use crate::{
@@ -478,6 +479,7 @@ enum TrashArea {
     Records,
     Backups,
     Documents,
+    AgentSnapshots,
 }
 
 fn remove_tree_in_area(
@@ -490,6 +492,7 @@ fn remove_tree_in_area(
         TrashArea::Records => "records",
         TrashArea::Backups => "backups",
         TrashArea::Documents => "documents",
+        TrashArea::AgentSnapshots => "agent-snapshots",
     });
     // Do not canonicalize a redirected recycle-bin and accidentally grant its
     // destination deletion authority. Freeze Windows ancestors while deleting.

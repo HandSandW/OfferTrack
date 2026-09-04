@@ -174,6 +174,14 @@ const SNAPSHOT_CHANGES = new Set([
 ]);
 
 export const desktopApi = {
+  getApplicationDetailTarget: () =>
+    call<{ applicationId: string; revision: number } | null>(
+      "get_application_detail_target",
+    ),
+  setApplicationDetailTarget: (applicationId: string, show: boolean) =>
+    call<void>("set_application_detail_target", { applicationId, show }),
+  notifyApplicationDetailChanged: () =>
+    call<void>("notify_application_detail_changed"),
   checkAgentSnapshot: (warehouseId: string, warehousePath: string) =>
     call<SnapshotReport>("check_agent_snapshot", {
       warehouseId,
@@ -231,6 +239,12 @@ export const desktopApi = {
     call<BackupTrashChallenge>("prepare_backup_recycle_bin"),
   emptyBackupRecycleBin: (confirmationToken: string) =>
     call<BackupTrashResult>("empty_backup_recycle_bin", { confirmationToken }),
+  prepareAgentSnapshotRecycleBin: () =>
+    call<BackupTrashChallenge>("prepare_agent_snapshot_recycle_bin"),
+  emptyAgentSnapshotRecycleBin: (confirmationToken: string) =>
+    call<BackupTrashResult>("empty_agent_snapshot_recycle_bin", {
+      confirmationToken,
+    }),
   previewApplicationBatch: (request: BatchRequest) =>
     call<BatchPreview>("preview_application_batch", { request }),
   applyApplicationBatch: (request: BatchRequest, expectedFingerprint: string) =>

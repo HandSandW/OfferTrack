@@ -1,4 +1,9 @@
-import { useRef, useState, type ReactNode } from "react";
+import {
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+  type ReactNode,
+} from "react";
 import type {
   ApplicationListItem,
   ColumnSetting,
@@ -31,7 +36,9 @@ interface Props {
   disabled: boolean;
   empty: boolean;
   onSort: (key: string) => void;
+  onFocus: (id: string) => void;
   onOpen: (id: string) => void;
+  onColumnsChange: (columns: ColumnSetting[]) => void;
   onBeforeEdit: () => Promise<boolean>;
   onUpdated: (record: ApplicationListItem) => void;
   onChecked: (targets: BatchTarget[]) => void;
@@ -55,7 +62,9 @@ export function ApplicationGrid(props: Props) {
     selectedId,
     checked,
     onSort,
+    onFocus,
     onOpen,
+    onColumnsChange,
     onBeforeEdit,
     onUpdated,
     onChecked,
@@ -68,12 +77,43 @@ export function ApplicationGrid(props: Props) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const [draggingColumn, setDraggingColumn] = useState<string | null>(null);
+  const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
   const lock = useRef(false);
   const root = useRef<HTMLDivElement>(null);
   const cells = useRef(new Map<string, HTMLTableCellElement>());
   const offsets = pinnedOffsets(columns);
   const ids = grouped.flatMap(([, rows]) => rows.map((row) => row.id));
   const keys = columns.map((c) => c.key);
+  const resize = (
+    event: ReactPointerEvent<HTMLSpanElement>,
+    column: ColumnSetting,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    const startX = event.clientX;
+    const startWidth = column.width;
+    const move = (next: PointerEvent) => {
+      const width = Math.min(
+        600,
+        Math.max(80, startWidth + next.clientX - startX),
+      );
+      onColumnsChange(
+        columns.map((item) =>
+          item.key === column.key ? { ...item, width } : item,
+        ),
+      );
+    };
+    const finish = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish, { once: true });
+    window.addEventListener("pointercancel", finish, { once: true });
+  };
   const active =
     address && ids.includes(address.id) && keys.includes(address.key)
       ? address
@@ -217,6 +257,13 @@ export function ApplicationGrid(props: Props) {
                   {columns.map((column) => (
                     <th
                       key={column.key}
+                      className={[
+                        draggingColumn === column.key ? "dragging" : "",
+                        dragOverColumn === column.key ? "drag-over" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                      draggable
                       tabIndex={0}
                       aria-sort={
                         props.sort[0]?.key === column.key
@@ -226,6 +273,47 @@ export function ApplicationGrid(props: Props) {
                           : "none"
                       }
                       onClick={() => onSort(column.key)}
+                      onDragStart={(event) => {
+                        setDraggingColumn(column.key);
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/plain", column.key);
+                      }}
+                      onDragEnd={() => {
+                        setDraggingColumn(null);
+                        setDragOverColumn(null);
+                      }}
+                      onDragOver={(event) => {
+                        if (draggingColumn && draggingColumn !== column.key) {
+                          event.preventDefault();
+                          setDragOverColumn(column.key);
+                        }
+                      }}
+                      onDragLeave={() =>
+                        setDragOverColumn((current) =>
+                          current === column.key ? null : current,
+                        )
+                      }
+                      onDrop={(event) => {
+                        event.preventDefault();
+                        const source =
+                          event.dataTransfer.getData("text/plain") ||
+                          draggingColumn;
+                        if (!source || source === column.key) return;
+                        const next = [...columns];
+                        const from = next.findIndex(
+                          (item) => item.key === source,
+                        );
+                        const to = next.findIndex(
+                          (item) => item.key === column.key,
+                        );
+                        if (from < 0 || to < 0) return;
+                        const [moved] = next.splice(from, 1);
+                        if (!moved) return;
+                        next.splice(to, 0, moved);
+                        onColumnsChange(next);
+                        setDraggingColumn(null);
+                        setDragOverColumn(null);
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
                           e.preventDefault();
@@ -244,15 +332,49 @@ export function ApplicationGrid(props: Props) {
                           : {}),
                       }}
                     >
-                      {labels[column.key]}{" "}
-                      {props.sort[0]?.key === column.key
-                        ? props.sort[0].direction === "asc"
-                          ? "↑"
-                          : "↓"
-                        : ""}
+                      <span className="column-heading-label">
+                        {labels[column.key]}{" "}
+                        {props.sort[0]?.key === column.key
+                          ? props.sort[0].direction === "asc"
+                            ? "↑"
+                            : "↓"
+                          : ""}
+                      </span>
+                      <span
+                        aria-label={`调整${labels[column.key]}列宽`}
+                        className="column-resize-handle"
+                        role="separator"
+                        tabIndex={0}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => {
+                          if (
+                            event.key !== "ArrowLeft" &&
+                            event.key !== "ArrowRight"
+                          )
+                            return;
+                          event.preventDefault();
+                          event.stopPropagation();
+                          const width = Math.min(
+                            600,
+                            Math.max(
+                              80,
+                              column.width +
+                                (event.key === "ArrowRight" ? 10 : -10),
+                            ),
+                          );
+                          onColumnsChange(
+                            columns.map((item) =>
+                              item.key === column.key
+                                ? { ...item, width }
+                                : item,
+                            ),
+                          );
+                        }}
+                        onPointerDown={(event) => resize(event, column)}
+                      />
                     </th>
                   ))}
-                  <th>批量选择</th>
+                  <th>操作与选择</th>
                 </tr>
               </thead>
               <tbody>
@@ -260,7 +382,7 @@ export function ApplicationGrid(props: Props) {
                   <tr
                     key={record.id}
                     className={selectedId === record.id ? "selected" : ""}
-                    onClick={() => onOpen(record.id)}
+                    onClick={() => onFocus(record.id)}
                   >
                     {columns.map((column) => {
                       const here = { id: record.id, key: column.key };
@@ -279,7 +401,10 @@ export function ApplicationGrid(props: Props) {
                           }
                           aria-label={`${labels[column.key]} · ${record.companyName} · ${record.positionName}`}
                           onFocus={(e) => {
-                            if (e.target === e.currentTarget) setAddress(here);
+                            if (e.target === e.currentTarget) {
+                              setAddress(here);
+                              onFocus(record.id);
+                            }
                           }}
                           onDoubleClick={(e) => {
                             if (
@@ -400,7 +525,13 @@ export function ApplicationGrid(props: Props) {
                         </td>
                       );
                     })}
-                    <td onClick={(e) => e.stopPropagation()}>
+                    <td
+                      className="row-actions"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button type="button" onClick={() => onOpen(record.id)}>
+                        详情
+                      </button>
                       <input
                         type="checkbox"
                         aria-label={`选择投递 ${record.companyName} ${record.positionName}`}

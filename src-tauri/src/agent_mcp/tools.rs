@@ -54,7 +54,7 @@ pub(super) fn list() -> Value {
         "Read an application's last document index. Paths relative to warehouse root. Does not scan or read resume contents; indexed_missing is the last scan observation.",
         "Validate an indexed document by application/document ID and resolve its current absolute path. Does not read file contents. Path validity is a point-in-time observation, not durable permission.",
         "Read the current persistent Agent write permission and custom field definitions. Cannot enable writes. Desktop writable sessions must close before Agent writes.",
-        "Read snapshot freshness against current indexed data and validate generation file hashes. Returns the generation's warehouse-relative path and check timestamp; never generates files. Not a live attachment scan.",
+        "Read snapshot freshness against current indexed data and validate the fixed snapshot file hashes. Returns the stable warehouse-relative path and check timestamp; never generates files. Not a live attachment scan.",
     ];
     let mut tools: Vec<Value> = NAMES.iter().zip(descriptions).map(|(name, description)| json!({
         "name":format!("offertrack_{name}"),"description":description,

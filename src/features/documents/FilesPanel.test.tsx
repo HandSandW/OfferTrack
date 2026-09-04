@@ -91,14 +91,8 @@ describe("file health feedback", () => {
       .mockResolvedValue(updated);
     vi.spyOn(desktopApi, "availableBrowsers").mockResolvedValue([]);
     show(true, record);
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "resume.pdf 更多操作" }),
-      ).toBeEnabled(),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "resume.pdf 更多操作" }),
-    );
+    await screen.findByText("resume.pdf");
+    fireEvent.contextMenu(screen.getByText("resume.pdf"));
     fireEvent.click(screen.getByRole("menuitem", { name: "重命名…" }));
     fireEvent.change(screen.getByLabelText("文件名称"), {
       target: { value: "new.pdf" },
@@ -175,7 +169,8 @@ describe("file health feedback", () => {
     await screen.findByText(/目录可访问/);
     expect(screen.getByRole("button", { name: "重新扫描" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "重试规范化" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("button", { name: "打开" }));
+    fireEvent.contextMenu(screen.getByText("resume.pdf"));
+    fireEvent.click(screen.getByRole("menuitem", { name: "使用默认应用打开" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("文件仍未找到");
     expect(open).toHaveBeenCalledWith(detail.id, "doc");
     expect(onChange).not.toHaveBeenCalled();

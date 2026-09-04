@@ -37,6 +37,8 @@ pub enum CoreError {
     StateUnavailable,
     #[error("warehouse operation is in progress")]
     OperationBusy,
+    #[error("application detail window is still open")]
+    DetailWindowOpen,
     #[error("warehouse is read-only")]
     ReadOnlyWarehouse,
     #[error("warehouse is not open")]
@@ -45,6 +47,8 @@ pub enum CoreError {
     NotFound,
     #[error("input validation failed")]
     Validation,
+    #[error("saved view name already exists")]
+    DuplicateViewName,
     #[error("record has changed")]
     RevisionConflict,
     #[error("interview round is referenced by an event")]
@@ -192,6 +196,11 @@ impl From<CoreError> for AppErrorPayload {
                 message: "OfferTrack 内部状态暂时不可用，请重新启动应用。",
                 retryable: true,
             },
+            CoreError::DuplicateViewName => Self {
+                code: "VIEW_NAME_CONFLICT",
+                message: "已存在同名视图。请换一个名称后重试；现有视图未被覆盖。",
+                retryable: true,
+            },
             CoreError::ReadOnlyWarehouse => Self {
                 code: "WAREHOUSE_READ_ONLY",
                 message: "当前数据仓库以只读方式打开，不能保存更改。",
@@ -200,6 +209,11 @@ impl From<CoreError> for AppErrorPayload {
             CoreError::OperationBusy => Self {
                 code: "WAREHOUSE_OPERATION_BUSY",
                 message: "当前仓库正在执行操作，请等待完成后重试。",
+                retryable: true,
+            },
+            CoreError::DetailWindowOpen => Self {
+                code: "DETAIL_WINDOW_OPEN",
+                message: "投递详情窗口仍在打开。请先在详情窗口保存或放弃修改并关闭窗口，再切换或关闭数据仓库。",
                 retryable: true,
             },
             CoreError::FileMissing => Self {

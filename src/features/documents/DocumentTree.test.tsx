@@ -103,12 +103,18 @@ it("shows collapsible folders, default double-click and PDF browser/right-click 
   expect(screen.getByText("材料").closest("details")).toHaveAttribute("open");
   fireEvent.doubleClick(screen.getByText("resume.PDF"));
   expect(open).toHaveBeenCalledWith("record", "pdf");
+  fireEvent.doubleClick(screen.getByText("材料/投递/resume.PDF · 1 KB"));
+  expect(open).toHaveBeenCalledTimes(2);
+  expect(open).toHaveBeenLastCalledWith("record", "pdf");
+  fireEvent.doubleClick(screen.getByText("resume.PDF").closest("article")!);
+  expect(open).toHaveBeenCalledTimes(3);
+  expect(open).toHaveBeenLastCalledWith("record", "pdf");
   fireEvent.contextMenu(screen.getByText("resume.PDF"));
   fireEvent.click(
     await screen.findByRole("menuitem", { name: "使用 Edge 打开" }),
   );
   expect(open).toHaveBeenLastCalledWith("record", "pdf", "edge");
-  fireEvent.click(screen.getByRole("button", { name: "resume.docx 更多操作" }));
+  fireEvent.contextMenu(screen.getByText("resume.docx"));
   expect(
     screen.queryByRole("menuitem", { name: "使用 Edge 打开" }),
   ).not.toBeInTheDocument();

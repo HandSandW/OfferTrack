@@ -2,6 +2,7 @@ mod agent_access;
 pub mod agent_cli;
 mod agent_mcp;
 mod agent_write;
+mod application_detail;
 mod applications;
 mod auxiliary_states;
 mod backup_archive;
@@ -73,6 +74,7 @@ struct AppState {
     warehouse: Mutex<Option<WarehouseSession>>,
     trash_confirmation: Mutex<Option<TrashConfirmation>>,
     backup_trash_confirmation: Mutex<Option<recycle_bin::backups::Confirmation>>,
+    agent_snapshot_trash_confirmation: Mutex<Option<recycle_bin::agent_snapshots::Confirmation>>,
     document_trash_confirmation: Mutex<Option<document_trash::cleanup::Confirmation>>,
     file_watcher: Mutex<Option<RecommendedWatcher>>,
 }
@@ -89,6 +91,38 @@ struct TrashConfirmation {
 struct StartupState {
     remembered_warehouse_path: Option<String>,
     active_warehouse: Option<WarehouseSummary>,
+}
+
+#[tauri::command]
+async fn set_application_detail_target(
+    app: tauri::AppHandle,
+    application_id: String,
+    show: bool,
+) -> Result<(), AppErrorPayload> {
+    // Building or focusing a WebView2 window from the synchronous IPC event
+    // handler can deadlock Wry's Windows message loop.  Keep every native
+    // detail-window operation on the blocking runtime, just like menu-opened
+    // auxiliary windows.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<application_detail::DetailState>();
+        application_detail::select(&app, &state, application_id, show)
+    })
+    .await
+    .map_err(|_| AppErrorPayload::from(CoreError::StateUnavailable))?
+}
+
+#[tauri::command]
+fn get_application_detail_target(
+    state: State<'_, application_detail::DetailState>,
+) -> Result<Option<application_detail::Target>, AppErrorPayload> {
+    Ok(state.get()?)
+}
+
+#[tauri::command]
+fn notify_application_detail_changed(app: tauri::AppHandle) -> Result<(), AppErrorPayload> {
+    app.emit_to("main", "application-detail-changed", ())
+        .map_err(|_| CoreError::StateUnavailable)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -118,6 +152,7 @@ fn create_warehouse(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<WarehouseSummary, AppErrorPayload> {
+    ensure_detail_closed(&app)?;
     let mut active = session_access::try_lock(&state.warehouse)?;
     install_session(
         &app,
@@ -134,6 +169,7 @@ fn open_warehouse(
     path: String,
     access_mode: WarehouseAccessMode,
 ) -> Result<WarehouseSummary, AppErrorPayload> {
+    ensure_detail_closed(&app)?;
     let mut active = session_access::try_lock(&state.warehouse)?;
     install_session(
         &app,
@@ -177,14 +213,29 @@ fn install_session(
         .lock()
         .map_err(|_| CoreError::StateUnavailable)? = None;
     *state
+        .agent_snapshot_trash_confirmation
+        .lock()
+        .map_err(|_| CoreError::StateUnavailable)? = None;
+    *state
         .file_watcher
         .lock()
         .map_err(|_| CoreError::StateUnavailable)? = Some(watcher);
     Ok(summary)
 }
 
+fn ensure_detail_closed<R: Runtime>(app: &tauri::AppHandle<R>) -> Result<(), AppErrorPayload> {
+    if app.get_webview_window("application-detail").is_some() {
+        return Err(CoreError::DetailWindowOpen.into());
+    }
+    Ok(())
+}
+
 #[tauri::command]
-fn close_warehouse(state: State<'_, AppState>) -> Result<(), AppErrorPayload> {
+fn close_warehouse(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), AppErrorPayload> {
+    ensure_detail_closed(&app)?;
     let mut active = session_access::try_lock(&state.warehouse)?;
     *active = None;
     *state
@@ -193,6 +244,10 @@ fn close_warehouse(state: State<'_, AppState>) -> Result<(), AppErrorPayload> {
         .map_err(|_| CoreError::StateUnavailable)? = None;
     *state
         .trash_confirmation
+        .lock()
+        .map_err(|_| CoreError::StateUnavailable)? = None;
+    *state
+        .agent_snapshot_trash_confirmation
         .lock()
         .map_err(|_| CoreError::StateUnavailable)? = None;
     Ok(())
@@ -281,7 +336,7 @@ async fn create_agent_snapshot(
         Ok((s.summary().warehouse_id, s.root().to_path_buf()))
     })?;
     tauri::async_runtime::spawn_blocking(move || {
-        // A derived generation only records its checkpoint; no daily backup or business mutation.
+        // A derived snapshot refresh only records its checkpoint; no daily backup or business mutation.
         read_session(&app.state::<AppState>(), |s| {
             if s.summary().warehouse_id != expected.0 || s.root() != expected.1 {
                 return Err(CoreError::RevisionConflict);
@@ -550,6 +605,30 @@ async fn empty_backup_recycle_bin(
             .ok_or(CoreError::InvalidConfirmation)?;
     background_session_operation(app, move |session| {
         recycle_bin::backups::purge(session, confirmation, &confirmation_token)
+    })
+    .await
+}
+
+#[tauri::command]
+fn prepare_agent_snapshot_recycle_bin(
+    state: State<'_, AppState>,
+) -> Result<recycle_bin::agent_snapshots::Challenge, AppErrorPayload> {
+    let (confirmation, challenge) = read_session(&state, recycle_bin::agent_snapshots::prepare)?;
+    *session_access::try_lock(&state.agent_snapshot_trash_confirmation)? = Some(confirmation);
+    Ok(challenge)
+}
+
+#[tauri::command]
+async fn empty_agent_snapshot_recycle_bin(
+    app: tauri::AppHandle,
+    confirmation_token: String,
+) -> Result<recycle_bin::agent_snapshots::Purged, AppErrorPayload> {
+    let confirmation =
+        session_access::try_lock(&app.state::<AppState>().agent_snapshot_trash_confirmation)?
+            .take()
+            .ok_or(CoreError::InvalidConfirmation)?;
+    background_session_operation(app, move |session| {
+        recycle_bin::agent_snapshots::purge(session, confirmation, &confirmation_token)
     })
     .await
 }
@@ -1276,6 +1355,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .manage(help::HelpState::default())
+        .manage(application_detail::DetailState::default())
         .setup(|app| {
             app.set_menu(build_menu(app.handle())?)?;
             Ok(())
@@ -1337,6 +1417,9 @@ pub fn run() {
             }
             let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool = tauri::generate_handler![
                 open_help,
+                set_application_detail_target,
+                get_application_detail_target,
+                notify_application_detail_changed,
                 get_help_location,
                 get_help_diagnostics,
                 open_help_logs,
@@ -1427,6 +1510,8 @@ pub fn run() {
                 restore_external_database_backup,
                 prepare_backup_recycle_bin,
                 empty_backup_recycle_bin,
+                prepare_agent_snapshot_recycle_bin,
+                empty_agent_snapshot_recycle_bin,
                 apply_application_batch,
                 preview_database_backup,
                 restore_database_backup,

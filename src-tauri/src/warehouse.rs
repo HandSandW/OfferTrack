@@ -12,6 +12,7 @@ use uuid::Uuid;
 use crate::{
     error::CoreError,
     migrations::{self, CURRENT_SCHEMA_VERSION},
+    platform,
     storage::{StorageLocationInspector, StorageWarning, SystemStorageLocationInspector},
 };
 
@@ -24,6 +25,7 @@ const REQUIRED_DIRECTORIES: &[&str] = &[
     "recycle-bin/records",
     "recycle-bin/documents",
     "recycle-bin/backups",
+    "recycle-bin/agent-snapshots",
     "backups/database",
     "agent-access",
 ];
@@ -76,7 +78,7 @@ impl WarehouseSession {
         WarehouseSummary {
             warehouse_id: self.descriptor.warehouse_id,
             format_version: self.descriptor.format_version,
-            display_path: self.root.to_string_lossy().into_owned(),
+            display_path: platform::display_path(&self.root),
             access_mode: self.access_mode,
             warnings: self.warnings.clone(),
         }

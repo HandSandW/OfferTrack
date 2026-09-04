@@ -32,6 +32,8 @@ agent-access/
 /docs/*
 !/docs/agent-api.md
 !/docs/backup-format.md
+!/docs/assets/
+!/docs/assets/offertrack-slogan.png
 !/docs/user-guide/
 !/docs/user-guide/README.md
 .github/ISSUE_TEMPLATE/
@@ -40,5 +42,8 @@ agent-access/
 # Generated Tauri metadata and currently unsupported platform assets.
 src-tauri/gen/
 src-tauri/icons/*
-!src-tauri/icons/app-icon.svg
 !src-tauri/icons/icon.ico
+
+
+# Bug
+docs/bug

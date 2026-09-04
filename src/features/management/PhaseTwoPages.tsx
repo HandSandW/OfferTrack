@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { TrashEntry } from "../../contracts";
 import { desktopApi } from "../../lib/tauri";
 import { useDraftGuard, useDraftState } from "../../shared/draftGuard";
+import { formatLocalDateTime } from "../../shared/dateTime";
 import { DocumentTrashPanel } from "./DocumentTrashPanel";
 
 export function RecycleBinPage({
@@ -59,7 +60,7 @@ export function RecycleBinPage({
       if (
         !(await confirm({
           title: "清空回收站",
-          message: `将永久删除回收站中的 ${challenge.itemCount} 条投递及其文件。此操作无法撤销，是否继续？`,
+          message: `将永久删除回收站中的 ${challenge.itemCount} 条投递记录，以及其中的简历、附件和子文件夹。此操作无法恢复，是否继续？`,
           confirmLabel: "是",
           destructive: true,
         }))
@@ -137,7 +138,7 @@ export function RecycleBinPage({
               <strong>{item.companyName}</strong>
               <span>
                 {item.positionName} · 删除于{" "}
-                {new Date(item.deletedAtUtc).toLocaleString()}
+                {formatLocalDateTime(item.deletedAtUtc)}
               </span>
               <span>原位置：{item.originalRelativePath}</span>
             </div>
